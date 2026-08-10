@@ -24,9 +24,23 @@ classifiers = [
 ]
 dependencies = [
   "anndata>=0.13",
+  "dask",
+  "geopandas",
+  "numpy",
+  "opencv-python-headless",
+  "openslide-bin",
+  "openslide-python",
+  "pandas",
+  "pillow",
+  "rich",
   # for debug logging (referenced from the issue template)
   "session-info2",
+  "shapely",
+  "spatialdata",
+  "spatialdata-io",
+  "tifffile",
 ]
+optional-dependencies.czi = [ "bioio", "bioio-czi" ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://spatialrefinery.readthedocs.io/"
 urls.Homepage = "https://github.com/peng-lab/spatialrefinery"
@@ -38,7 +52,9 @@ dev = [
 ]
 test = [
   "coverage>=7.10",
+  "numpy",
   "pytest",
+  "pytest-xdist",
 ]
 doc = [
   "ipykernel",
@@ -129,12 +145,17 @@ lint.pydocstyle.convention = "numpy"
 [tool.mypy]
 files = [ "src", "tests" ]
 
+[[tool.mypy.overrides]]
+module = [ "bioio.*", "geopandas.*", "shapely.*", "spatialdata.*", "spatialdata_io.*" ]
+ignore_missing_imports = true
+
 [tool.pytest]
-addopts = [
+ini_options.testpaths = [ "tests" ]
+ini_options.addopts = [
   "--import-mode=importlib", # allow using test files with same name
+  "--strict-markers",
+  "--strict-config",
 ]
-strict = true
-testpaths = [ "tests" ]
 
 [tool.coverage]
 run.omit = [
