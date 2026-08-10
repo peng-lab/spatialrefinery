@@ -345,6 +345,21 @@ def convert_to_ometiff(
     -------
     list[Path]
         Every `.ome.tif` file written (or found, if `overwrite=False`).
+
+    Raises
+    ------
+    spatialrefinery.core.registry.RegistryError
+        If `source`'s suffix has no registered converter, or `source` is
+        itself an `.ome.tif`/`.ome.tiff` file.
+
+    Examples
+    --------
+    >>> from spatialrefinery import convert_to_ometiff
+    >>> ometiff_paths = convert_to_ometiff(
+    ...     source="/path/to/slide.svs",
+    ...     output_dir="/path/to/output",
+    ...     subresolutions=4,
+    ... )
     """
     from spatialrefinery.core.registry import get_converter_for
 

@@ -2,6 +2,10 @@
 
 This module provides functions for reading and converting various spatial transcriptomics data formats to SpatialData zarr format.
 
+> For the full, versioned API reference and narrated tutorials, see the
+> [documentation site](https://spatialrefinery.readthedocs.io/page/api.html). This README is a quick local reference and
+> may lag behind it.
+
 ## Xenium Data Conversion
 
 The `xenium` module provides functionality to convert 10x Xenium raw bundled outputs to SpatialData zarr format.
@@ -35,6 +39,8 @@ Convert 10x Xenium raw data to SpatialData zarr format.
 - `include_aligned_image`: Whether to include aligned H&E image if available (default: True)
 - `create_spots`: Whether to create pseudo-spots (default: True)
 - `spot_sizes`: List of spot sizes in micrometers to create (default: None; no spots are created unless a list is given)
+- `overlap`: Fractional overlap between adjacent hexagonal spots (default: 0.0)
+- `values`: Which element to aggregate into spots, `"transcripts"` or `"cell_boundaries"` (default: `"transcripts"`)
 - `n_jobs`: Number of workers for parallel processing (default: 1)
 - `overwrite`: Whether to overwrite existing zarr file (default: False)
 
@@ -123,12 +129,13 @@ Rename `AnnData.var` columns that fail SpatialData table validation.
 
 #### `create_pseudo_spots()`
 
-Create pseudo-spots from transcripts and add them to the SpatialData object.
+Create pseudo-spots from transcripts (or cell boundaries) and add them to the SpatialData object.
 
 **Parameters:**
 - `sdata`: The SpatialData object containing transcripts and cell boundaries
-- `specs`: Xenium experiment specifications (must contain 'pixel_size')
 - `spot_size_um`: The size of pseudo-spots in micrometers (default: 55)
+- `overlap`: Fractional overlap between adjacent hexagonal spots (default: 0.06)
+- `values`: Which element to aggregate into spots, `"transcripts"` or `"cell_boundaries"` (default: `"transcripts"`)
 
 **Returns:**
 - The updated SpatialData object with added pseudo-spots

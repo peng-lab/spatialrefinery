@@ -101,12 +101,20 @@ intersphinx_mapping = {
     "anndata": ("https://anndata.scverse.org/en/stable/", None),
     "scanpy": ("https://scanpy.scverse.org/en/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
+    "spatialdata": ("https://spatialdata.scverse.org/en/stable/", None),
 }
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "**.ipynb_checkpoints",
+    # Contributing guide is disabled for now (kept on disk, not rendered/linked).
+    "contributing.md",
+]
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -122,7 +130,9 @@ html_title = project
 
 html_theme_options = {
     "repository_url": repository_url,
+    "repository_branch": "main",
     "use_repository_button": True,
+    "use_download_button": True,
     "path_to_docs": "docs/",
     "navigation_with_keys": False,
 }
@@ -134,4 +144,10 @@ nitpick_ignore = [
     # If building the documentation fails because of a missing link that is outside your control,
     # you can add an exception to this list.
     #     ("py:class", "igraph.Graph"),
+    # Return-type annotations of the documented API (docs/api.md) that point at
+    # classes we deliberately don't document (the API reference only covers the
+    # four functions used in the tutorial notebooks).
+    ("py:class", "spatialrefinery.core.downloader.DownloadResult"),
+    ("py:class", "spatialrefinery.core.converter.ImageConverter"),
+    ("py:exc", "spatialrefinery.core.registry.RegistryError"),
 ]

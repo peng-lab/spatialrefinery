@@ -270,6 +270,15 @@ def xenium_to_spatialdata(
         Whether to create pseudo-spots. Default is True.
     spot_sizes : list, optional
         List of spot sizes in micrometers to create. Default is None.
+        Spots are only created when both `create_spots` is True *and*
+        `spot_sizes` is a non-empty list -- the default combination
+        (`create_spots=True`, `spot_sizes=None`) creates no spots.
+    overlap : float, optional
+        Fractional overlap between adjacent hexagonal spots, forwarded to
+        `create_pseudo_spots`. Default is 0.0 (no overlap).
+    values : str, optional
+        Which SpatialData element to aggregate into spots: `"transcripts"`
+        or `"cell_boundaries"`. Default is `"transcripts"`.
     n_jobs : int, optional
         Number of workers for parallel processing. Default is 1.
     overwrite : bool, optional
@@ -280,15 +289,20 @@ def xenium_to_spatialdata(
     Path
         Path to the created zarr file.
 
+    Raises
+    ------
+    FileNotFoundError
+        If `dataset_path` does not contain an `experiment.xenium` file.
+
     Examples
     --------
-    >>> from spatialrefinery.io.xenium import xenium_to_spatialdata
+    >>> from spatialrefinery import xenium_to_spatialdata
     >>> zarr_path = xenium_to_spatialdata(
     ...     dataset_path="/path/to/xenium/data",
     ...     output_path="/path/to/output",
     ...     output_name="my_sample",
     ...     create_spots=True,
-    ...     spot_sizes=None,
+    ...     spot_sizes=[55, 100],
     ... )
     """
     # Convert to Path objects
@@ -438,6 +452,15 @@ def xenium_to_spatialdata_zip(
         Whether to create pseudo-spots. Default is True.
     spot_sizes : list, optional
         List of spot sizes in micrometers. Default is None.
+        Spots are only created when both `create_spots` is True *and*
+        `spot_sizes` is a non-empty list -- the default combination
+        (`create_spots=True`, `spot_sizes=None`) creates no spots.
+    overlap : float, optional
+        Fractional overlap between adjacent hexagonal spots, forwarded to
+        `create_pseudo_spots`. Default is 0.0 (no overlap).
+    values : str, optional
+        Which SpatialData element to aggregate into spots: `"transcripts"`
+        or `"cell_boundaries"`. Default is `"transcripts"`.
     n_jobs : int, optional
         Number of workers for parallel processing. Default is 1.
     overwrite : bool, optional
@@ -450,9 +473,15 @@ def xenium_to_spatialdata_zip(
     Path
         Path to the created zip file.
 
+    Raises
+    ------
+    FileNotFoundError
+        If `dataset_path` does not contain an `experiment.xenium` file
+        (raised by the underlying `xenium_to_spatialdata` call).
+
     Examples
     --------
-    >>> from spatialrefinery.io.xenium import xenium_to_spatialdata_zip
+    >>> from spatialrefinery import xenium_to_spatialdata_zip
     >>> zip_path = xenium_to_spatialdata_zip(
     ...     dataset_path="/path/to/xenium/data",
     ...     output_path="/path/to/output",
@@ -580,8 +609,8 @@ def download_xenium_study(
     Parameters
     ----------
     source : str | Path | Iterable[str]
-        Path to a `curl -O <url>` manifest (see
-        `example_data/10x_xenium_human.txt`), or an iterable of URLs.
+        Path to a manifest file of `curl -O <url>` lines (one per asset,
+        as downloaded from 10x's dataset pages), or an iterable of URLs.
     outdir : str | Path
         Base directory; assets land under `outdir/<study>/<filename>`.
     studies : list[str], optional
@@ -590,6 +619,10 @@ def download_xenium_study(
         Restrict to these asset kinds (e.g. `["outs"]`). Default: all kinds.
     max_workers : int, optional
         Parallel download workers. Default 8.
+    retries : int, optional
+        Number of retry attempts per asset on transient failure. Default 3.
+    timeout : int, optional
+        Per-request timeout in seconds. Default 180.
     extract : bool, optional
         Whether to unzip `.zip` assets in place after downloading
         (`*_xe_outs.zip` is always skipped). Default True.
@@ -602,7 +635,11 @@ def download_xenium_study(
     Returns
     -------
     list[DownloadResult]
-        One result per selected asset.
+        One result per selected asset. Each result's `.status` is one of
+        `"downloaded"`, `"cached"` (already present, `overwrite=False`),
+        `"skipped"` (excluded by `dry_run`), or `"failed"`; `.ok` is a bool
+        convenience property, and `.error` holds the exception message
+        for failed downloads.
     """
     downloader = XeniumDownloader(
         outdir,

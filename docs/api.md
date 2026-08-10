@@ -1,3 +1,43 @@
-# API
+# API reference
 
-The public API is not defined yet. Modules will be documented here as they are added.
+This page documents the functions used in the [tutorial notebooks](tutorials.md): the two entry points for pulling raw
+Xenium data and converting it to a [SpatialData](https://spatialdata.scverse.org/en/stable/) zarr store, and the one entry
+point for converting whole-slide images to pyramidal OME-TIFF. All four are importable directly off the top-level package.
+
+## Downloading
+
+Fetch a 10x Genomics Xenium study's raw asset bundle from a `curl -O <url>` manifest.
+
+```{eval-rst}
+.. currentmodule:: spatialrefinery
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    download_xenium_study
+```
+
+## Converting
+
+Convert raw vendor bundles and whole-slide images into analysis-ready formats: a
+[SpatialData](https://spatialdata.scverse.org/en/stable/) zarr store for Xenium, and pyramidal OME-TIFF for microscopy images.
+
+```{eval-rst}
+.. currentmodule:: spatialrefinery
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    xenium_to_spatialdata
+    xenium_to_spatialdata_zip
+    convert_to_ometiff
+```
+
+:::{note}
+This reference is deliberately narrow. `spatialrefinery.core` and `spatialrefinery.io` contain additional lower-level
+machinery -- the technology/converter registry, `BaseDownloader`, `XeniumConverter`, and the pseudo-spot helpers in
+`core.utils` -- that other modules build on but that isn't part of the documented, stable surface yet. Expect it to change
+without notice; the four functions above are the supported way to use `spatialrefinery`.
+:::
