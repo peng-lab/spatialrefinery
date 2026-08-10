@@ -25,7 +25,7 @@ please also cite {cite:p}`Virshup_2023` (see [references](references.md)).
 ```text
 BSD 3-Clause License
 
-Copyright (c) 2026, Rushin Gindra
+Copyright (c) 2026, Rushin Gindra, Manuel Tran
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
