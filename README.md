@@ -11,6 +11,16 @@
 A toolkit for turning raw spatial-omics vendor outputs into analysis-ready data: 10x Genomics Xenium bundles become
 [SpatialData][] zarr stores, and whole-slide/microscopy images become pyramidal OME-TIFF.
 
+## Why spatialrefinery
+
+`spatialrefinery` was built for [Phoenix][], which predicts spatial transcriptomics from routine histology and needs
+training data assembled the same way across every Xenium sample: an aligned H&E image and transcript-derived
+pseudo-bulk spots at several resolutions, all in one SpatialData object. Rather than re-deriving that pipeline per
+sample, `spatialrefinery` turns a raw Xenium bundle -- transcripts, cell/nucleus boundaries, aligned H&E -- into a
+zarr store with pseudo-spots binned at whatever sizes a given resolution needs (e.g. 55um, 100um), and converts the
+paired whole-slide image to a pyramidal OME-TIFF for fast viewing. Run it over a batch of raw bundles and you get one
+common, multi-resolution dataset to train Phoenix on.
+
 ## Getting started
 
 Please refer to the [documentation][], in particular the [installation guide][], [tutorials][], and
@@ -96,6 +106,7 @@ model, please also cite the [scverse paper][]. See [Citation & License][] for de
 
 `spatialrefinery` is released under the [BSD 3-Clause License][license].
 
+[phoenix]: https://doi.org/10.64898/2026.04.25.720812
 [spatialdata]: https://spatialdata.scverse.org/en/stable/
 [spatialdata-io]: https://spatialdata.scverse.org/projects/io/en/stable/
 [scverse paper]: https://doi.org/10.1038/s41587-023-01733-8
