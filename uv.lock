@@ -2214,6 +2214,18 @@ wheels = [
 ]
 
 [[package]]
+name = "matplotlib-scalebar"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c5/3d/e76e0e48c96e43b656446c35990824f20136de21940a7436020ab757a54d/matplotlib_scalebar-0.9.0.tar.gz", hash = "sha256:f91adc5e4e67ac920a8fa98a55f904d56e5c2da4d56286748c31ec62146362be", size = 1180588, upload-time = "2025-01-17T22:10:59.349Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/c0/2dfab7b319dabe23f5a7b515a797c74b501d15c72e7a03837cf0cf779b9e/matplotlib_scalebar-0.9.0-py3-none-any.whl", hash = "sha256:5140525cd4e0c60bcade541b86571dabaf446fa69192530bd82d60b54601aa79", size = 16411, upload-time = "2025-01-17T22:10:57.319Z" },
+]
+
+[[package]]
 name = "mdit-py-plugins"
 version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4453,6 +4465,22 @@ wheels = [
 ]
 
 [[package]]
+name = "spatialdata-plot"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "matplotlib-scalebar" },
+    { name = "scanpy" },
+    { name = "scikit-learn" },
+    { name = "spatialdata" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/b4/3d36e662e26824e8789e95ca8388ff8456e5a1e69fa254b46306289b0ae0/spatialdata_plot-0.4.1.tar.gz", hash = "sha256:fcdbffa1a5c1e4ed2896850cad6d111c66fd46610c41ce0e5bee99e796cb89ba", size = 19084476, upload-time = "2026-08-10T16:18:41.754Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/0e/d73bd255a6e530c181f38c1258de4e5888d8b2b58b7d316f4fd9b38ca269/spatialdata_plot-0.4.1-py3-none-any.whl", hash = "sha256:b48d56311f8d66b48e277cf78fac61e3a88dceeb1074269ddb691011223dacb1", size = 145521, upload-time = "2026-08-10T16:18:39.412Z" },
+]
+
+[[package]]
 name = "spatialrefinery"
 version = "0.0.1"
 source = { editable = "." }
@@ -4460,6 +4488,7 @@ dependencies = [
     { name = "anndata" },
     { name = "dask" },
     { name = "geopandas" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "openslide-bin" },
@@ -4471,6 +4500,7 @@ dependencies = [
     { name = "shapely" },
     { name = "spatialdata" },
     { name = "spatialdata-io" },
+    { name = "spatialdata-plot" },
     { name = "tifffile" },
 ]
 
@@ -4517,6 +4547,7 @@ requires-dist = [
     { name = "bioio-czi", marker = "extra == 'czi'" },
     { name = "dask" },
     { name = "geopandas" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "openslide-bin" },
@@ -4528,6 +4559,7 @@ requires-dist = [
     { name = "shapely" },
     { name = "spatialdata" },
     { name = "spatialdata-io" },
+    { name = "spatialdata-plot" },
     { name = "tifffile" },
 ]
 provides-extras = ["czi"]
