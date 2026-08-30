@@ -24,3 +24,11 @@ xenium_example/
 # docs
 /docs/generated/
 /docs/_build/
+
+# Local scratch work: new notebooks and scripts stay untracked by default
+# (already-tracked files are unaffected; use `git add -f` to version a new one)
+/docs/notebooks/*.ipynb
+/scripts/*.py
+/graphify-out/
+/slurm/
+/slurm-logs/

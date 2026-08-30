@@ -15,8 +15,12 @@ from spatialrefinery.core.utils import (
     _mask_to_gdf as mask_to_gdf,
 )
 from spatialrefinery.core.utils import (
+    assign_points_to_hexes,
     bin_centroids,
+    bin_points_to_hex_counts,
+    hex_candidate_offsets,
     hex_grid_centroids,
+    hex_lattice_params,
     human_bytes,
     parse_curl_manifest,
     safe_extract_zip,
@@ -164,6 +168,166 @@ def test_hex_grid_centroids_invalid_overlap_raises(overlap: float) -> None:
 
 
 # --------------------------------------------------------------------- #
+# Analytic hex membership (replaces the shapely sjoin in the transcript
+# aggregation -- these are the tests that pin it to the old semantics)
+# --------------------------------------------------------------------- #
+
+
+def _shapely_reference(x, y, bounds, spot_size_um, overlap):
+    """Ground truth: build the polygons and sjoin, exactly as before."""
+    geopandas = pytest.importorskip("geopandas")
+    shapely = pytest.importorskip("shapely.geometry")
+
+    from spatialrefinery.core.utils import hexagon_vertices
+
+    centroids = hex_grid_centroids(bounds, spot_size_um, overlap)
+    hexes = geopandas.GeoDataFrame(
+        geometry=[shapely.Polygon(hexagon_vertices(cx, cy, spot_size_um / 2.0)) for cx, cy in centroids]
+    )
+    points = geopandas.GeoDataFrame(geometry=geopandas.points_from_xy(x, y))
+    joined = hexes.sjoin(points)
+    return set(zip(joined.index_right.tolist(), joined.index.tolist(), strict=True))
+
+
+@pytest.mark.parametrize(
+    ("spot_size_um", "overlap"),
+    [(55.0, 0.0), (55.0, 0.06), (100.0, 0.06), (55.0, 0.25), (30.0, 0.4)],
+)
+def test_assign_points_to_hexes_matches_shapely_sjoin(spot_size_um: float, overlap: float) -> None:
+    """The analytic test must reproduce `sjoin` pair-for-pair.
+
+    This is the contract that lets `_aggregate_transcripts_hex` stand in for
+    `SpatialData.aggregate`: same pairs means same counts, including the
+    duplicates that overlapping hexagons produce.
+    """
+    bounds = (0.0, 0.0, 600.0, 600.0)
+    rng = np.random.default_rng(11)
+    x = rng.uniform(-spot_size_um, 600.0 + spot_size_um, 20_000)
+    y = rng.uniform(-spot_size_um, 600.0 + spot_size_um, 20_000)
+
+    lattice = hex_lattice_params(bounds, spot_size_um, overlap)
+    positions, spot_ids = assign_points_to_hexes(x, y, lattice, overlap)
+
+    assert set(zip(positions.tolist(), spot_ids.tolist(), strict=True)) == _shapely_reference(
+        x, y, bounds, spot_size_um, overlap
+    )
+
+
+def test_assign_points_to_hexes_covers_the_plane_without_overlap() -> None:
+    """With overlap=0 the hexagons tile, so every interior point lands in exactly one."""
+    bounds = (0.0, 0.0, 400.0, 400.0)
+    lattice = hex_lattice_params(bounds, 55.0, 0.0)
+    rng = np.random.default_rng(3)
+    x = rng.uniform(50.0, 350.0, 5_000)
+    y = rng.uniform(50.0, 350.0, 5_000)
+
+    positions, _ = assign_points_to_hexes(x, y, lattice, 0.0)
+    assert np.array_equal(np.bincount(positions, minlength=5_000), np.ones(5_000, dtype=int))
+
+
+def test_assign_points_to_hexes_overlap_assigns_some_points_twice() -> None:
+    """Overlapping spots genuinely double-count, which the sjoin also did."""
+    bounds = (0.0, 0.0, 400.0, 400.0)
+    lattice = hex_lattice_params(bounds, 55.0, 0.06)
+    rng = np.random.default_rng(5)
+    x = rng.uniform(50.0, 350.0, 5_000)
+    y = rng.uniform(50.0, 350.0, 5_000)
+
+    positions, _ = assign_points_to_hexes(x, y, lattice, 0.06)
+    multiplicity = np.bincount(positions, minlength=5_000)
+    assert multiplicity.min() >= 1
+    assert multiplicity.max() > 1
+
+
+def test_hex_grid_centroids_matches_lattice_params_indexing() -> None:
+    """Spot id `i * nx + j` must address the centroid the lattice describes."""
+    bounds = (-13.0, 7.5, 500.0, 300.0)
+    lattice = hex_lattice_params(bounds, 55.0, 0.06)
+    centroids = hex_grid_centroids(bounds, 55.0, 0.06)
+
+    assert len(centroids) == lattice["nx"] * lattice["ny"]
+    for row in (0, 1, lattice["ny"] - 1):
+        for col in (0, lattice["nx"] - 1):
+            expected_x = lattice["x_range"][col] + (lattice["dx"] / 2 if row % 2 else 0.0)
+            assert centroids[row * lattice["nx"] + col] == pytest.approx((expected_x, lattice["y_range"][row]))
+
+
+@pytest.mark.parametrize(
+    ("overlap", "rows", "cols"),
+    [(0.0, [0, 1], [0, 1]), (0.06, [0, 1], [0, 1]), (0.4, [-1, 0, 1, 2], [0, 1])],
+)
+def test_hex_candidate_offsets_widen_with_overlap(overlap, rows, cols) -> None:
+    row_offsets, col_offsets = hex_candidate_offsets(overlap)
+    assert list(row_offsets) == rows
+    assert list(col_offsets) == cols
+
+
+def test_bin_points_to_hex_counts_matches_a_dense_reference() -> None:
+    """Streaming in batches must give the same matrix as counting in one go."""
+    bounds = (0.0, 0.0, 300.0, 300.0)
+    overlap, spot_size, n_genes = 0.06, 55.0, 7
+    lattice = hex_lattice_params(bounds, spot_size, overlap)
+    n_spots = lattice["nx"] * lattice["ny"]
+
+    rng = np.random.default_rng(17)
+    x = rng.uniform(0.0, 300.0, 30_000)
+    y = rng.uniform(0.0, 300.0, 30_000)
+    codes = rng.integers(0, n_genes, 30_000)
+
+    counts = bin_points_to_hex_counts(
+        ((x[s], y[s], codes[s]) for s in (slice(0, 7_000), slice(7_000, 21_000), slice(21_000, None))),
+        lattice,
+        n_spots=n_spots,
+        n_genes=n_genes,
+        overlap=overlap,
+    )
+
+    expected = np.zeros((n_spots, n_genes), dtype=np.int64)
+    positions, spot_ids = assign_points_to_hexes(x, y, lattice, overlap)
+    np.add.at(expected, (spot_ids, codes[positions]), 1)
+
+    assert np.array_equal(counts.toarray(), expected)
+    assert counts.sum() == len(positions)
+
+
+def test_bin_points_to_hex_counts_flushes_without_changing_the_result() -> None:
+    """`flush_pairs` bounds the merge buffer only; it must not alter counts."""
+    bounds = (0.0, 0.0, 200.0, 200.0)
+    lattice = hex_lattice_params(bounds, 55.0, 0.06)
+    n_spots = lattice["nx"] * lattice["ny"]
+
+    rng = np.random.default_rng(23)
+    batches = [(rng.uniform(0, 200, 4_000), rng.uniform(0, 200, 4_000), rng.integers(0, 5, 4_000)) for _ in range(5)]
+
+    unflushed = bin_points_to_hex_counts(iter(batches), lattice, n_spots, 5, 0.06, flush_pairs=10**9)
+    flushed = bin_points_to_hex_counts(iter(batches), lattice, n_spots, 5, 0.06, flush_pairs=100)
+    assert (unflushed != flushed).nnz == 0
+
+
+def test_bin_points_to_hex_counts_drops_negative_gene_codes() -> None:
+    """A -1 code is how an unmapped feature is skipped, not counted into gene 0."""
+    bounds = (0.0, 0.0, 200.0, 200.0)
+    lattice = hex_lattice_params(bounds, 55.0, 0.0)
+    n_spots = lattice["nx"] * lattice["ny"]
+
+    x = np.array([100.0, 100.0, 100.0])
+    y = np.array([100.0, 100.0, 100.0])
+    kept = bin_points_to_hex_counts([(x, y, np.array([0, 0, 0]))], lattice, n_spots, 3, 0.0)
+    dropped = bin_points_to_hex_counts([(x, y, np.array([0, -1, -1]))], lattice, n_spots, 3, 0.0)
+
+    assert kept.sum() == 3
+    assert dropped.sum() == 1
+
+
+def test_bin_points_to_hex_counts_empty_input_returns_empty_matrix() -> None:
+    lattice = hex_lattice_params((0.0, 0.0, 200.0, 200.0), 55.0, 0.06)
+    n_spots = lattice["nx"] * lattice["ny"]
+    counts = bin_points_to_hex_counts([], lattice, n_spots, 4, 0.06)
+    assert counts.shape == (n_spots, 4)
+    assert counts.nnz == 0
+
+
+# --------------------------------------------------------------------- #
 # Tissue mask -> polygons (regression net for the hestcore -> cv2 rewrite)
 # --------------------------------------------------------------------- #
 
@@ -219,3 +383,94 @@ def test_fix_table_validation_errors_renames_invalid_var_columns(adata) -> None:
     assert "bad col" not in fixed.var.columns
     assert "bad_col" in fixed.var.columns
     validate_table_attr_keys(fixed)  # must no longer raise
+
+
+# --------------------------------------------------------------------- #
+# Points: bytes-column decoding
+# --------------------------------------------------------------------- #
+
+
+def _bytes_points():
+    """A points frame shaped like an older Xenium `transcripts.parquet`.
+
+    `cell_id` / `fov_name` hold `bytes` under a bare `object` dtype, which is
+    what the "Preview" / "With_Addon" bundles produce.
+
+    `convert-string` is switched off while the frame is built because
+    `dd.from_pandas` otherwise re-types object columns to `StringDtype` and the
+    bug disappears. The real frames come from `dd.read_parquet` with a declared
+    object-dtype meta, which is what this reproduces.
+    """
+    import dask
+    import dask.dataframe as dd
+    import pandas as pd
+    from spatialdata.models import PointsModel
+
+    df = pd.DataFrame(
+        {
+            "x": np.array([1.0, 2.0], dtype="float32"),
+            "y": np.array([3.0, 4.0], dtype="float32"),
+            "cell_id": np.array([b"UNASSIGNED", b"abcd-1"], dtype=object),
+            "fov_name": np.array([b"A5", b"B7"], dtype=object),
+        }
+    )
+    with dask.config.set({"dataframe.convert-string": False}):
+        return PointsModel.parse(dd.from_pandas(df, npartitions=1))
+
+
+def test_decode_bytes_columns_makes_points_parquet_writable() -> None:
+    """The decoded frame's dummy meta must be inferable by pyarrow.
+
+    This is the actual failure mode: `to_parquet` types the schema from
+    `meta_nonempty`, which fills a bare `object` column with an `object()`
+    sentinel that pyarrow rejects.
+    """
+    import pyarrow as pa
+    from dask.dataframe.utils import meta_nonempty
+
+    from spatialrefinery.core.utils import decode_bytes_columns
+
+    points = _bytes_points()
+
+    with pytest.raises(pa.ArrowInvalid):
+        pa.Schema.from_pandas(meta_nonempty(points._meta), preserve_index=False)
+
+    decoded = decode_bytes_columns(points)
+
+    pa.Schema.from_pandas(meta_nonempty(decoded._meta), preserve_index=False)
+
+
+def test_decode_bytes_columns_decodes_values_and_keeps_transformations() -> None:
+    """Values become real strings and the coordinate transforms survive."""
+    from spatialdata.transformations import Scale, get_transformation, set_transformation
+
+    from spatialrefinery.core.utils import decode_bytes_columns
+
+    points = _bytes_points()
+    set_transformation(points, Scale([2.0, 2.0], axes=("x", "y")), to_coordinate_system="global")
+    before = get_transformation(points, get_all=True)
+
+    decoded = decode_bytes_columns(points)
+    result = decoded.compute()
+
+    assert list(result["cell_id"]) == ["UNASSIGNED", "abcd-1"]
+    assert list(result["fov_name"]) == ["A5", "B7"]
+    assert str(get_transformation(decoded, get_all=True)) == str(before)
+
+
+def test_decode_bytes_columns_no_object_columns_is_a_noop() -> None:
+    """A frame with no `object` columns is returned untouched."""
+    import dask.dataframe as dd
+    import pandas as pd
+    from spatialdata.models import PointsModel
+
+    from spatialrefinery.core.utils import decode_bytes_columns
+
+    points = PointsModel.parse(
+        dd.from_pandas(
+            pd.DataFrame({"x": np.array([1.0], dtype="float32"), "y": np.array([2.0], dtype="float32")}),
+            npartitions=1,
+        )
+    )
+
+    assert decode_bytes_columns(points) is points
