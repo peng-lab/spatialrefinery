@@ -16,14 +16,14 @@ _LAZY_ATTRS = {
     "xenium_to_spatialdata_zip": "spatialrefinery.io.xenium",
 }
 
-__all__ = ["__version__", "core", "io", *_LAZY_ATTRS]
+__all__ = ["__version__", "core", "io", "segmentation", *_LAZY_ATTRS]
 
 
 def __getattr__(name: str):
-    """Lazily expose `spatialrefinery.core`/`.io` and the documented top-level functions."""
+    """Lazily expose `spatialrefinery.core`/`.io`/`.segmentation` and the documented top-level functions."""
     import importlib
 
-    if name in ("core", "io"):
+    if name in ("core", "io", "segmentation"):
         module = importlib.import_module(f"spatialrefinery.{name}")
         globals()[name] = module
         return module
