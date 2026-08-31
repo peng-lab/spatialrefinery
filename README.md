@@ -9,7 +9,8 @@
 [badge-coverage]: https://codecov.io/github/peng-lab/spatialrefinery/branch/main/graph/badge.svg
 
 A toolkit for turning raw spatial-omics vendor outputs into analysis-ready data: 10x Genomics Xenium bundles become
-[SpatialData][] zarr stores, and whole-slide/microscopy images become pyramidal OME-TIFF.
+[SpatialData][] zarr stores, whole-slide/microscopy images become pyramidal OME-TIFF, and H&E slides can be segmented
+into nucleus boundaries packaged as a SpatialData store of their own.
 
 ## Why spatialrefinery
 
@@ -20,6 +21,9 @@ sample, `spatialrefinery` turns a raw Xenium bundle -- transcripts, cell/nucleus
 zarr store with pseudo-spots binned at whatever sizes a given resolution needs (e.g. 55um, 100um), and converts the
 paired whole-slide image to a pyramidal OME-TIFF for fast viewing. Run it over a batch of raw bundles and you get one
 common, multi-resolution dataset to train Phoenix on.
+
+The same pipeline also runs on histology that has no paired Xenium run: nucleus segmentation turns an H&E slide into a
+SpatialData store of nucleus boundaries with an empty table over a gene panel -- the shape Phoenix predicts into.
 
 ## Getting started
 
@@ -42,6 +46,27 @@ xenium_to_spatialdata(
 
 # 3. Convert an associated whole-slide image to pyramidal OME-TIFF
 convert_to_ometiff(source="raw_files/my_study/slide.svs", output_dir="processed")
+```
+
+Nucleus segmentation needs the optional `segmentation` extra, and is reached through `spatialrefinery.segmentation`
+rather than the top-level package:
+
+```python
+from spatialrefinery.segmentation.instanseg import segment_wsi
+from spatialrefinery.segmentation.to_spatialdata import default_zarr_path, geojson_to_spatialdata
+
+slide = "processed/slide.ome.tif"
+
+# 4. Segment nuclei with InstanSeg -> segmentation/slide.ome.tif/cells.geojson
+cells = segment_wsi(slide, outdir="segmentation")
+
+# 5. Package the boundaries with the slide -> processed/slide.zarr (+ .zarr.zip)
+geojson_to_spatialdata(
+    geojson_path=cells,
+    zarr_path=default_zarr_path(slide, "processed"),
+    image_path=slide,
+    template_adata_path="panel_template.h5ad",
+)
 ```
 
 ## Installation
@@ -75,7 +100,20 @@ Choose from the options below to install spatialrefinery:
    pip install git+https://github.com/peng-lab/spatialrefinery.git  # (or `uv add`)
    ```
 
-See the [installation guide][] for the optional `czi` extra and a verification snippet.
+### Optional extras
+
+```bash
+# Zeiss CZI images, via bioio
+pip install "spatialrefinery[czi] @ git+https://github.com/peng-lab/spatialrefinery.git"
+
+# H&E nucleus segmentation, via InstanSeg
+pip install "spatialrefinery[segmentation] @ git+https://github.com/peng-lab/spatialrefinery.git"
+```
+
+`segmentation` is kept out of the base install because it pulls `instanseg-torch`, and therefore torch's multi-GB CUDA
+wheels, which most uses do not need. A CUDA GPU is strongly recommended for it.
+
+See the [installation guide][] for details and a verification snippet.
 
 ## Release notes
 
