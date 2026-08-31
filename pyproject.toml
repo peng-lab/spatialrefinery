@@ -44,6 +44,19 @@ dependencies = [
   "tifffile",
 ]
 optional-dependencies.czi = [ "bioio", "bioio-czi" ]
+# Nucleus segmentation on H&E whole-slide images. Kept optional: it pulls
+# torch (multi-GB CUDA wheels), which most spatialrefinery uses do not need.
+optional-dependencies.segmentation = [
+  # rasterio + geojson are what InstanSeg's save_geojson=True actually imports.
+  # They are NOT taken via `instanseg-torch[io]`: that extra also carries
+  # `zarr>=2.0.0,<3`, which silently downgrades zarr/numcodecs/tiffslide and
+  # breaks spatialdata. Its stated reason ("tiffslide doesn't support zarr v3
+  # yet") is stale as of tiffslide 4.0 (Bayer-Group/tiffslide#97).
+  "geojson>=3",
+  "instanseg-torch>=0.1.1",
+  "rasterio>=1.3",
+  "tiffslide>=4",
+]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://spatialrefinery.readthedocs.io/"
 urls.Homepage = "https://github.com/peng-lab/spatialrefinery"
@@ -153,11 +166,15 @@ module = [
   "bioio.*",
   "dask_image.*",
   "geopandas.*",
+  # From the optional `segmentation` extra, so absent in the typecheck env.
+  "instanseg.*",
   "pyarrow.*",
   "scipy.*",
   "shapely.*",
   "spatialdata.*",
   "spatialdata_io.*",
+  "tiffslide.*",
+  "torch.*",
 ]
 ignore_missing_imports = true
 

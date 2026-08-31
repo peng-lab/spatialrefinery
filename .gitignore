@@ -32,3 +32,14 @@ xenium_example/
 /graphify-out/
 /slurm/
 /slurm-logs/
+
+# ...except the segmentation pipeline, which is part of the package's public
+# surface rather than scratch: the CLI wrappers are documented entry points and
+# the SLURM scripts are the supported way to run them on a cluster.
+!/scripts/instanseg_segment.py
+!/scripts/geojson_to_spatialdata.py
+!/slurm/
+/slurm/*
+!/slurm/segment_node_worker.sh
+!/slurm/segment_slurm.sh
+!/slurm/SEGMENTATION_PLAN.md
