@@ -38,6 +38,19 @@ pip install "spatialrefinery[czi] @ git+https://github.com/peng-lab/spatialrefin
 Without the `czi` extra, {py:obj}`~spatialrefinery.convert_to_ometiff` still handles every other registered format
 (`.svs`, `.ndpi`, `.tif`, `.tiff`, `.mrxs`, `.scn`, `.bif`, `.vms`, `.svslide`) -- only `.czi` requires it.
 
+## Optional: nucleus segmentation
+
+Nucleus segmentation on H&E whole-slide images needs the `segmentation` extra, which pulls
+[InstanSeg](https://github.com/instanseg/instanseg) (`instanseg-torch`) plus `rasterio`, `geojson` and `tiffslide`:
+
+```bash
+pip install "spatialrefinery[segmentation] @ git+https://github.com/peng-lab/spatialrefinery.git"
+```
+
+It is kept optional because `instanseg-torch` brings torch and therefore multi-GB CUDA wheels, which most
+`spatialrefinery` uses do not need. A CUDA GPU is strongly recommended -- see
+[Nucleus segmentation to SpatialData zarr](notebooks/segment_nuclei).
+
 ## Verifying the install
 
 ```python

@@ -8,6 +8,8 @@ openslide-readable image on disk and is left to the end-to-end scripts.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -24,6 +26,7 @@ from spatialrefinery.core.utils import (
     human_bytes,
     parse_curl_manifest,
     safe_extract_zip,
+    slide_stem,
     split_study_filename,
     transform_name,
 )
@@ -44,6 +47,28 @@ from spatialrefinery.core.utils import (
 )
 def test_transform_name(old_name: str, expected: str) -> None:
     assert transform_name(old_name) == expected
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        # The case this helper exists for: `Path.stem` would leave "slide.ome".
+        ("slide.ome.tif", "slide"),
+        ("slide.ome.tiff", "slide"),
+        ("slide.OME.TIF", "slide"),
+        ("slide.ome.zarr", "slide"),
+        ("slide.svs", "slide"),
+        ("slide.tif", "slide"),
+        ("slide.NDPI", "slide"),
+        # Only the extension goes; dots inside the name are part of it.
+        ("Xenium_V1.2_section.ome.tif", "Xenium_V1.2_section"),
+        ("a.b.svs", "a.b"),
+        ("no_extension", "no_extension"),
+    ],
+)
+def test_slide_stem(filename: str, expected: str) -> None:
+    assert slide_stem(filename) == expected
+    assert slide_stem(Path("/some/dir") / filename) == expected
 
 
 def test_parse_curl_manifest_ignores_non_curl_lines(tmp_path) -> None:

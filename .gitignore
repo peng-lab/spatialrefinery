@@ -27,19 +27,11 @@ xenium_example/
 
 # Local scratch work: new notebooks and scripts stay untracked by default
 # (already-tracked files are unaffected; use `git add -f` to version a new one)
-/docs/notebooks/*.ipynb
-/scripts/*.py
+/scripts/convert_panel_sample.py
 /graphify-out/
 /slurm/
 /slurm-logs/
 
-# ...except the segmentation pipeline, which is part of the package's public
-# surface rather than scratch: the CLI wrappers are documented entry points and
-# the SLURM scripts are the supported way to run them on a cluster.
-!/scripts/instanseg_segment.py
-!/scripts/geojson_to_spatialdata.py
-!/slurm/
-/slurm/*
-!/slurm/segment_node_worker.sh
-!/slurm/segment_slurm.sh
-!/slurm/SEGMENTATION_PLAN.md
+# ...except the segmentation pipeline's documented entry points: the tutorial
+# notebook and the two CLI wrappers. The SLURM scripts stay untracked -- they
+# are cluster-specific scratch.

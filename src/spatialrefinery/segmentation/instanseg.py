@@ -113,7 +113,9 @@ def segment_wsi(
     outdir
         Parent directory. Results go to `<outdir>/<wsi_path.name>/cells.geojson`;
         the directory is named with the full filename (extension included) so
-        that `a.svs` and `a.ndpi` cannot collide.
+        that `a.svs` and `a.ndpi` cannot collide. The zarr stage names its store
+        for the stem instead (`a.ome.tif` -> `a.zarr`); see
+        `to_spatialdata.default_zarr_path`.
     pixel_size
         Microns per pixel. Read from the slide metadata when omitted. InstanSeg
         rejects a value outside [0.1, 1] micron, so pass this explicitly for

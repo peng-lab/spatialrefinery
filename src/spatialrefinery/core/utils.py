@@ -52,6 +52,35 @@ def transform_name(old_name: str) -> str:
     return re.sub(r"[^\w\._-]", "_", old_name)
 
 
+#: Multi-part suffixes that `Path.stem` would only half-strip: `a.ome.tif` -> `a.ome`.
+COMPOUND_SUFFIXES = (".ome.tif", ".ome.tiff", ".ome.zarr")
+
+
+def slide_stem(path: str | Path) -> str:
+    """Return a slide's filename with its extension removed, `.ome.tif` included.
+
+    `Path.stem` strips only the final suffix, so `slide.ome.tif` yields
+    `slide.ome`. Derived outputs are keyed on this instead: the SpatialData
+    store one slide converts to is named `<slide_stem>.zarr`.
+
+    Parameters
+    ----------
+    path : str | Path
+        A slide path or bare filename.
+
+    Returns
+    -------
+    str
+        The filename up to (but excluding) the first suffix of its extension.
+    """
+    name = Path(path).name
+    lowered = name.lower()
+    for suffix in COMPOUND_SUFFIXES:
+        if lowered.endswith(suffix):
+            return name[: -len(suffix)]
+    return Path(name).stem
+
+
 def iter_curl_urls(lines: Iterable[str]) -> Iterator[str]:
     """Yield URLs from `curl -O <url>` lines, ignoring comments/blanks/other commands."""
     for line in lines:

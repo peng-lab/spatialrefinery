@@ -10,6 +10,8 @@ with the plain command-line invocation if you'd rather run it as a batch job.
    store, with aligned H&E images and Visium-like pseudo-spots.
 3. **[Converting images to OME-TIFF](notebooks/convert_to_ometiff)** -- convert whole-slide/microscopy images to
    pyramidal OME-TIFF for fast, multi-resolution viewing.
+4. **[Nucleus segmentation to SpatialData zarr](notebooks/segment_nuclei)** -- segment nuclei in an H&E whole-slide image
+   with InstanSeg and package the boundaries as a SpatialData zarr store.
 
 ```{toctree}
 :hidden: true
@@ -18,4 +20,5 @@ with the plain command-line invocation if you'd rather run it as a batch job.
 notebooks/xenium_download
 notebooks/xenium_to_zarr
 notebooks/convert_to_ometiff
+notebooks/segment_nuclei
 ```
