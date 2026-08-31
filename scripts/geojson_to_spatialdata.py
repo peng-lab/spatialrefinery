@@ -8,8 +8,21 @@ Pairs with `instanseg_segment.py`, consuming the `cells.geojson` it writes.
 Usage
 -----
     python geojson_to_spatialdata.py \\
-        --geojson-path results/slide.svs/cells.geojson \\
-        --zarr-outdir zarrs/ --wsi-path slide.svs --template-adata template.h5ad
+        --geojson-path results/slide.ome.tif/cells.geojson \\
+        --zarr-outdir zarrs/ --wsi-path slide.ome.tif --template-adata template.h5ad
+
+The store is named for the slide's stem, so the example above writes
+`zarrs/slide.zarr` (plus `zarrs/slide.zarr.zip`).
+
+Stores written before this convention are named for the full filename
+(`slide.ome.tif.zarr`). The skip-existing check only looks for the new name, so
+re-running rebuilds them rather than skipping; rename them instead:
+
+    for z in "$ZARR_OUTDIR"/*.ome.tif.zarr; do echo "$z -> ${z%.ome.tif.zarr}.zarr"; done  # dry run
+    for z in "$ZARR_OUTDIR"/*.ome.tif.zarr; do mv "$z" "${z%.ome.tif.zarr}.zarr"; done
+    for z in "$ZARR_OUTDIR"/*.ome.tif.zarr.zip; do mv "$z" "${z%.ome.tif.zarr.zip}.zarr.zip"; done
+
+A zarr store records no path of its own, so a rename is all that is needed.
 """
 
 import argparse
@@ -17,7 +30,7 @@ import logging
 import sys
 from pathlib import Path
 
-from spatialrefinery.segmentation.to_spatialdata import geojson_to_spatialdata
+from spatialrefinery.segmentation.to_spatialdata import default_zarr_path, geojson_to_spatialdata
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -51,8 +64,9 @@ def main() -> None:
             logger.error("%s file not found: %s", label, path)
             sys.exit(1)
 
-    # Named with the full filename, matching the segmentation stage's layout.
-    zarr_path = Path(args.zarr_outdir) / f"{wsi_path.name}.zarr"
+    # Named for the stem, so `slide.ome.tif` gives `slide.zarr`. Unlike the
+    # segmentation stage's per-slide directory, which keeps the full filename.
+    zarr_path = default_zarr_path(wsi_path, args.zarr_outdir)
     if zarr_path.exists() and not args.no_skip_existing:
         logger.info("Skipping %s: %s already exists", wsi_path.name, zarr_path)
         sys.exit(0)

@@ -105,6 +105,19 @@ def wsi_image_element(image_path: str | Path, *, scale_factors=DEFAULT_SCALE_FAC
     )
 
 
+def default_zarr_path(wsi_path: str | Path, zarr_outdir: str | Path) -> Path:
+    """Return `<zarr_outdir>/<slide stem>.zarr`, the store name one slide converts to.
+
+    The stem is the prefix before the slide's extension, so `slide.ome.tif`
+    gives `slide.zarr` rather than `slide.ome.tif.zarr` or `slide.ome.zarr`.
+    Note this differs from the segmentation stage, whose per-slide directory
+    keeps the full filename (see `segmentation.instanseg.segment_wsi`).
+    """
+    from spatialrefinery.core.utils import slide_stem
+
+    return Path(zarr_outdir) / f"{slide_stem(wsi_path)}.zarr"
+
+
 def geojson_to_spatialdata(
     geojson_path: str | Path,
     zarr_path: str | Path,

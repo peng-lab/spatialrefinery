@@ -79,6 +79,9 @@ any zoom level.
 * - Convert a whole-slide image to pyramidal OME-TIFF
   - {py:obj}`~spatialrefinery.convert_to_ometiff`
   - [Converting images to OME-TIFF](notebooks/convert_to_ometiff)
+* - Segment nuclei in an H&E slide and store them as SpatialData
+  - {py:obj}`~spatialrefinery.segmentation.instanseg.segment_wsi`
+  - [Nucleus segmentation to SpatialData zarr](notebooks/segment_nuclei)
 ```
 
 ```{toctree}

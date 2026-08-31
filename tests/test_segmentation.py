@@ -24,6 +24,7 @@ from spatialrefinery.segmentation.instanseg import (
     segment_wsi,
 )
 from spatialrefinery.segmentation.to_spatialdata import (
+    default_zarr_path,
     explode_multipolygons,
     geojson_to_spatialdata,
     wsi_image_element,
@@ -196,6 +197,22 @@ def test_wsi_image_element_rejects_non_tiff(tmp_path):
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        # The regression: the full filename used to become the store name,
+        # giving `slide.ome.tif.zarr`.
+        ("slide.ome.tif", "slide.zarr"),
+        ("slide.ome.tiff", "slide.zarr"),
+        ("slide.svs", "slide.zarr"),
+        ("slide.tif", "slide.zarr"),
+    ],
+)
+def test_default_zarr_path_names_store_for_the_slide_stem(tmp_path, filename: str, expected: str):
+    """The store is `<stem>.zarr`, with the whole extension stripped."""
+    assert default_zarr_path(Path("/slides") / filename, tmp_path) == tmp_path / expected
+
+
 def test_geojson_to_spatialdata_writes_expected_elements(tmp_path):
     """The written zarr must carry the image, the shapes, and a table annotating them."""
     import spatialdata
@@ -207,7 +224,8 @@ def test_geojson_to_spatialdata_writes_expected_elements(tmp_path):
     template = tmp_path / "template.h5ad"
     make_template(template, n_vars=5)
 
-    zarr_path = tmp_path / "slide.tif.zarr"
+    zarr_path = default_zarr_path(wsi, tmp_path)
+    assert zarr_path == tmp_path / "slide.zarr"
     geojson_to_spatialdata(
         geojson_path=geojson,
         zarr_path=zarr_path,
