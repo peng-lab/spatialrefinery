@@ -167,6 +167,64 @@ def bin_centroids(x: np.ndarray, y: np.ndarray, spot_size_um: float) -> tuple[np
     return centroid_x, centroid_y
 
 
+def hex_lattice_params(
+    bounds: tuple[float, float, float, float],
+    spot_size_um: float,
+    overlap: float | None = 0.0,
+) -> dict:
+    """Describe the pointy-top hexagonal lattice that covers `bounds`.
+
+    This is the single definition of the lattice: :func:`hex_grid_centroids`
+    materialises it as centroids, and :func:`assign_points_to_hexes` uses it to
+    decide membership analytically. Keeping both on top of this function is what
+    guarantees the two can never drift apart.
+
+    Centroid `k` of the grid sits at row `i = k // nx`, column `j = k % nx`, with
+    odd rows shifted right by `dx / 2`.
+
+    Parameters
+    ----------
+    bounds : tuple[float, float, float, float]
+        `(x_min, y_min, x_max, y_max)`, as returned by :func:`xy_bounds`.
+    spot_size_um : float
+        Hexagon diameter (distance between opposite vertices), in the same
+        units as `bounds`.
+    overlap : float, optional
+        Fractional overlap between adjacent hexagons, applied by reducing
+        centroid spacing while keeping hexagon size constant. Default 0.0.
+
+    Returns
+    -------
+    dict
+        `s` (circumradius), `dx`/`dy` (centroid spacing), `x_range`/`y_range`
+        (row/column origins) and `nx`/`ny` (grid shape).
+    """
+    overlap = overlap or 0.0
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError(f"overlap must be in [0.0, 1.0), found {overlap}")
+
+    x_min, y_min, x_max, y_max = bounds
+    s = spot_size_um / 2.0  # side length == circumradius
+    hex_width = np.sqrt(3) * s
+    hex_height = 2 * s
+
+    dx = hex_width * (1 - overlap)
+    dy = hex_height * 3 / 4 * (1 - overlap)
+
+    x_range = np.arange(x_min - dx, x_max + dx, dx)
+    y_range = np.arange(y_min - dy, y_max + dy, dy)
+
+    return {
+        "s": s,
+        "dx": dx,
+        "dy": dy,
+        "x_range": x_range,
+        "y_range": y_range,
+        "nx": len(x_range),
+        "ny": len(y_range),
+    }
+
+
 def hex_grid_centroids(
     bounds: tuple[float, float, float, float],
     spot_size_um: float,
@@ -188,33 +246,20 @@ def hex_grid_centroids(
     Returns
     -------
     np.ndarray
-        Array of shape `(N, 2)` with one `(x, y)` centroid per row. Empty
+        Array of shape `(N, 2)` with one `(x, y)` centroid per row, ordered
+        row-major (all of row 0 left to right, then row 1, ...). Empty
         (`shape (0, 2)`) if the grid has no cells.
     """
-    overlap = overlap or 0.0
-    if not (0.0 <= overlap < 1.0):
-        raise ValueError(f"overlap must be in [0.0, 1.0), found {overlap}")
+    lattice = hex_lattice_params(bounds, spot_size_um, overlap)
+    x_range, y_range = lattice["x_range"], lattice["y_range"]
+    nx, ny = lattice["nx"], lattice["ny"]
 
-    x_min, y_min, x_max, y_max = bounds
-    s = spot_size_um / 2.0  # side length
-    hex_width = np.sqrt(3) * s
-    hex_height = 2 * s
-
-    dx = hex_width * (1 - overlap)
-    dy = hex_height * 3 / 4 * (1 - overlap)
-
-    x_range = np.arange(x_min - dx, x_max + dx, dx)
-    y_range = np.arange(y_min - dy, y_max + dy, dy)
-
-    centroids = []
-    for i, y_val in enumerate(y_range):
-        x_offset = dx / 2 if i % 2 else 0
-        for x_val in x_range:
-            centroids.append((x_val + x_offset, y_val))
-
-    if not centroids:
+    if nx == 0 or ny == 0:
         return np.empty((0, 2))
-    return np.asarray(centroids)
+
+    rows = np.repeat(np.arange(ny), nx)
+    x_offset = np.where(rows % 2 == 1, lattice["dx"] / 2, 0.0)
+    return np.column_stack([np.tile(x_range, ny) + x_offset, np.repeat(y_range, nx)])
 
 
 def hexagon_vertices(center_x: float, center_y: float, side_length: float) -> np.ndarray:
@@ -223,6 +268,203 @@ def hexagon_vertices(center_x: float, center_y: float, side_length: float) -> np
     x = center_x + side_length * np.cos(angles)
     y = center_y + side_length * np.sin(angles)
     return np.column_stack([x, y])
+
+
+def hex_candidate_offsets(overlap: float | None = 0.0) -> tuple[range, range]:
+    """Return the `(row, column)` lattice offsets a point could fall into.
+
+    A point at lattice cell `(i0, j0)` can only lie inside hexagons whose
+    centroid is within one circumradius `s` of it. With centroid spacing
+    `dy = 1.5 * s * (1 - overlap)` and `dx = sqrt(3) * s * (1 - overlap)`, that
+    is always rows `{i0, i0 + 1}` and columns `{j0, j0 + 1}`; wider overlaps
+    bring further neighbours into reach, so the span is derived from `overlap`
+    rather than hard-coded (the `0.06` used in practice needs only the base
+    2x2 block).
+
+    Returns
+    -------
+    tuple[range, range]
+        `(row_offsets, column_offsets)` to try around the containing cell.
+    """
+    overlap = overlap or 0.0
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError(f"overlap must be in [0.0, 1.0), found {overlap}")
+
+    # s / dy and (sqrt(3)/2 * s) / dx respectively, i.e. how many extra whole
+    # centroid spacings fit inside the hexagon's reach.
+    extra_rows = int(np.floor(1.0 / (1.5 * (1 - overlap))))
+    extra_cols = int(np.floor(1.0 / (2.0 * (1 - overlap))))
+    return range(-extra_rows, 2 + extra_rows), range(-extra_cols, 2 + extra_cols)
+
+
+def assign_points_to_hexes(
+    x: np.ndarray,
+    y: np.ndarray,
+    lattice: dict,
+    overlap: float | None = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map points to every lattice hexagon that contains them.
+
+    The lattice is regular, so membership is a closed-form test rather than a
+    spatial join: no geometry objects are built and nothing is indexed. A point
+    on a shared edge is reported for both hexagons, matching the `intersects`
+    predicate `GeoDataFrame.sjoin` uses. When `overlap > 0` the hexagons
+    genuinely overlap, so a point can be returned for more than one spot -- the
+    same duplication the sjoin produces.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        Point coordinates, in the units `lattice` was built in.
+    lattice : dict
+        As returned by :func:`hex_lattice_params`.
+    overlap : float, optional
+        The overlap `lattice` was built with; sets how far to search.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        `(point_positions, spot_ids)`, where `spot_ids` index
+        :func:`hex_grid_centroids` output for the same lattice.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+
+    s, dx, dy = lattice["s"], lattice["dx"], lattice["dy"]
+    nx, ny = lattice["nx"], lattice["ny"]
+    if nx == 0 or ny == 0 or x.size == 0:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+
+    x0, y0 = lattice["x_range"][0], lattice["y_range"][0]
+    half_width = np.sqrt(3) / 2 * s
+    inv_sqrt3 = 1.0 / np.sqrt(3)
+
+    row_offsets, col_offsets = hex_candidate_offsets(overlap)
+    base_row = np.floor((y - y0) / dy).astype(np.int64)
+
+    positions: list[np.ndarray] = []
+    spot_ids: list[np.ndarray] = []
+    for row_offset in row_offsets:
+        row = base_row + row_offset
+        row_ok = (row >= 0) & (row < ny)
+        if not row_ok.any():
+            continue
+        centre_y = y0 + row * dy
+        abs_dy = np.abs(y - centre_y)
+        # Odd rows are shifted right by half a spacing, so the column origin
+        # depends on the row -- recompute it rather than reusing base_row's.
+        x_offset = np.where(row % 2 == 1, dx / 2, 0.0)
+        base_col = np.floor((x - x0 - x_offset) / dx).astype(np.int64)
+        for col_offset in col_offsets:
+            col = base_col + col_offset
+            centre_x = x0 + x_offset + col * dx
+            abs_dx = np.abs(x - centre_x)
+            inside = row_ok & (col >= 0) & (col < nx) & (abs_dx <= half_width) & (abs_dy <= s - abs_dx * inv_sqrt3)
+            if inside.any():
+                hit = np.flatnonzero(inside)
+                positions.append(hit)
+                spot_ids.append(row[hit] * nx + col[hit])
+
+    if not positions:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    return np.concatenate(positions), np.concatenate(spot_ids)
+
+
+def _merge_pair_counts(pending, keys, counts):
+    """Fold a list of raw pair keys into running `(unique keys, counts)` totals."""
+    stacked = [*pending]
+    weights = [np.ones(part.size, dtype=np.int64) for part in pending]
+    if keys.size:
+        stacked.append(keys)
+        weights.append(counts)
+
+    all_keys = np.concatenate(stacked)
+    if all_keys.size == 0:
+        return keys, counts
+    all_weights = np.concatenate(weights)
+
+    order = np.argsort(all_keys, kind="stable")
+    all_keys = all_keys[order]
+    all_weights = all_weights[order]
+    unique_keys, starts = np.unique(all_keys, return_index=True)
+    return unique_keys, np.add.reduceat(all_weights, starts)
+
+
+def bin_points_to_hex_counts(
+    batches,
+    lattice: dict,
+    n_spots: int,
+    n_genes: int,
+    overlap: float | None = 0.0,
+    flush_pairs: int = 256_000_000,
+):
+    """Accumulate per-(spot, gene) counts by streaming batches of points.
+
+    Peak memory is one batch plus the running set of non-zero cells, so this
+    scales to billion-transcript sections that cannot be held in memory at
+    once. `spatialdata.aggregate` cannot: it builds one shapely `Point` per
+    transcript and then groups with `observed=False`, which materialises the
+    full `n_spots x n_genes` product regardless of how sparse the data is.
+
+    Parameters
+    ----------
+    batches : Iterable[tuple[np.ndarray, np.ndarray, np.ndarray]]
+        `(x, y, gene_codes)` triples. `gene_codes` index the gene axis;
+        negative codes are dropped, which is how unmapped features are skipped.
+    lattice : dict
+        As returned by :func:`hex_lattice_params`.
+    n_spots, n_genes : int
+        Shape of the matrix to build.
+    overlap : float, optional
+        The overlap `lattice` was built with.
+    flush_pairs : int, optional
+        Merge pending `(spot, gene)` pairs into the running totals once this
+        many have accumulated. Bounds the merge buffer; does not change output.
+        Each merge re-sorts the running totals, so this trades peak memory
+        against the number of merges: a 2.7e9-transcript section flushes ~12
+        times at the default and ~48 times at a quarter of it, with the running
+        array growing to hundreds of millions of cells either way.
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix
+        Counts of shape `(n_spots, n_genes)`.
+    """
+    from scipy import sparse
+
+    # One integer key per (spot, gene) cell keeps each merge a single sort
+    # rather than a lexsort over two columns.
+    running_keys = np.empty(0, dtype=np.int64)
+    running_counts = np.empty(0, dtype=np.int64)
+    pending: list[np.ndarray] = []
+    pending_size = 0
+
+    for batch_x, batch_y, gene_codes in batches:
+        positions, spot_ids = assign_points_to_hexes(batch_x, batch_y, lattice, overlap)
+        if positions.size == 0:
+            continue
+        codes = np.asarray(gene_codes)[positions].astype(np.int64)
+        keep = codes >= 0
+        if not keep.all():
+            spot_ids = spot_ids[keep]
+            codes = codes[keep]
+        if spot_ids.size == 0:
+            continue
+
+        pending.append(spot_ids * n_genes + codes)
+        pending_size += spot_ids.size
+        if pending_size >= flush_pairs:
+            running_keys, running_counts = _merge_pair_counts(pending, running_keys, running_counts)
+            pending, pending_size = [], 0
+
+    if pending:
+        running_keys, running_counts = _merge_pair_counts(pending, running_keys, running_counts)
+
+    if running_keys.size == 0:
+        return sparse.csr_matrix((n_spots, n_genes), dtype=np.int64)
+
+    rows, cols = np.divmod(running_keys, n_genes)
+    return sparse.coo_matrix((running_counts, (rows, cols)), shape=(n_spots, n_genes), dtype=np.int64).tocsr()
 
 
 def affine_from_point_pairs(src_pts: np.ndarray, dst_pts: np.ndarray) -> np.ndarray:
@@ -263,6 +505,62 @@ def fix_table_validation_errors(adata):
         adata.var = adata.var.rename(columns=invalid_columns, errors="raise")
 
     return adata
+
+
+def decode_bytes_columns(points):
+    """Decode bytes-valued ``object`` columns of a points frame to pandas strings.
+
+    Older Xenium outputs (the "Preview" / "With_Addon" bundles) store
+    `cell_id` and `fov_name` in `transcripts.parquet` as parquet *binary*
+    rather than *string*, so `spatialdata_io.xenium` hands back a dask frame
+    whose columns carry `bytes` under a bare `object` dtype.
+
+    That combination cannot be written. `SpatialData.write` sends points
+    through `dask.dataframe.to_parquet`, which infers the Arrow schema from
+    `meta_nonempty(df._meta)`; for a bare `object` dtype dask fills the dummy
+    frame with a literal `object()` sentinel, and pyarrow raises
+    `ArrowInvalid: ... did not recognize Python value type` before any real
+    data is touched. Re-typing the columns as `string` makes both the dummy
+    frame and the real values inferable.
+
+    Parameters
+    ----------
+    points : dask.dataframe.DataFrame
+        A points element, typically `sdata["transcripts"]`.
+
+    Returns
+    -------
+    dask.dataframe.DataFrame
+        The same element with every `object` column re-typed to `string`, and
+        its coordinate transformations preserved. Returned unchanged when
+        there are no `object` columns.
+    """
+    from spatialdata.models import PointsModel
+    from spatialdata.transformations import get_transformation, set_transformation
+
+    object_columns = [name for name, dtype in points.dtypes.items() if pd.api.types.is_object_dtype(dtype)]
+    if not object_columns:
+        return points
+
+    logger.info("Re-typing bytes/object columns to string: %s", object_columns)
+
+    # get_all=True so a frame registered in several coordinate systems keeps
+    # every one of them, not just "global".
+    transformations = get_transformation(points, get_all=True)
+
+    decoded = points
+    for column in object_columns:
+        decoded[column] = decoded[column].map(
+            lambda value: value.decode("utf-8") if isinstance(value, bytes) else value,
+            meta=(column, "string"),
+        )
+
+    # map() drops the PointsModel attrs, so re-parse and re-attach the
+    # transformations captured above.
+    decoded = PointsModel.parse(decoded)
+    set_transformation(decoded, transformations, set_all=True)
+
+    return decoded
 
 
 def slide_to_numpy(slide, level: int = 0) -> np.ndarray:
@@ -446,6 +744,7 @@ def create_hexagonal_spots(
     key_x: str = "x",
     key_y: str = "y",
     overlap: float | None = 0.0,
+    bounds: tuple[float, float, float, float] | None = None,
 ):
     """Cover the extent of `df` with hexagonal pseudo-spots.
 
@@ -465,6 +764,11 @@ def create_hexagonal_spots(
         Fractional overlap between adjacent hexagons (e.g. 0.06 for 6%
         overlap), applied by reducing centroid spacing while keeping
         hexagon size constant. Default 0.0.
+    bounds : tuple[float, float, float, float], optional
+        Precomputed `(x_min, y_min, x_max, y_max)` for `df`. Pass this when the
+        caller already has the extent: deriving it from a lazy dask frame costs
+        a full scan, and callers that also need the lattice want both to come
+        from the same numbers.
 
     Returns
     -------
@@ -476,7 +780,8 @@ def create_hexagonal_spots(
     from shapely.geometry import Polygon
 
     overlap = overlap or 0.0
-    bounds = xy_bounds(df, key_x, key_y)
+    if bounds is None:
+        bounds = xy_bounds(df, key_x, key_y)
     s = spot_size_um / 2.0
     centroids = hex_grid_centroids(bounds, spot_size_um, overlap)
 

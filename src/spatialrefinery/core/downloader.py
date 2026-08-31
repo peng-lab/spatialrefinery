@@ -3,7 +3,11 @@
 `download_with_retries` is the reusable engine: it retries transient
 network failures and writes atomically (to `<dest>.part`, then
 `os.replace`s onto `dest`) so a killed download never leaves a truncated
-file that a later run mistakes for complete. `BaseDownloader` wraps that
+file that a later run mistakes for complete. A surviving `<dest>.part` is
+resumed via an HTTP `Range` request rather than refetched from byte 0,
+which matters for the multi-GB assets this package targets, and every
+download whose length the server declares is size-checked before it is
+promoted onto `dest`. `BaseDownloader` wraps that
 engine with a thread pool and turns per-asset results into a plan/run
 workflow that subclasses only need to feed with `RemoteAsset`s (see
 `spatialrefinery.io.xenium.XeniumDownloader`).
@@ -21,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import spatialrefinery
@@ -73,6 +78,40 @@ class DownloadResult:
         return self.status in ("downloaded", "cached")
 
 
+def _partial_size(part_path: Path) -> int:
+    """Bytes already fetched into `part_path`, or 0 if it is absent/unreadable."""
+    try:
+        return part_path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _declared_total(resp: object, headers: object) -> int | None:
+    """Total size of the *whole* resource, or None if the server didn't say.
+
+    For a `206 Partial Content` reply the body is only the requested tail,
+    so `Content-Length` describes the tail, not the resource -- the total
+    lives in `Content-Range: bytes <start>-<end>/<total>`.
+    """
+    get = headers.get  # type: ignore[attr-defined]
+    if getattr(resp, "status", None) == 206:
+        total = get("Content-Range", "").rpartition("/")[2].strip()
+    else:
+        total = (get("Content-Length") or "").strip()
+    return int(total) if total.isdigit() else None
+
+
+def _content_length(url: str, headers: dict[str, str], timeout: int, ctx: ssl.SSLContext) -> int | None:
+    """Resource size via a HEAD request, or None if the server won't say."""
+    try:
+        req = Request(url, headers=headers, method="HEAD")
+        with urlopen(req, timeout=timeout, context=ctx) as resp:
+            length = (resp.headers.get("Content-Length") or "").strip()
+        return int(length) if length.isdigit() else None
+    except OSError:
+        return None
+
+
 def download_with_retries(
     url: str,
     dest: str | Path,
@@ -82,6 +121,7 @@ def download_with_retries(
     timeout: int = 180,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overwrite: bool = False,
+    resume: bool = True,
     user_agent: str = DEFAULT_USER_AGENT,
 ) -> Path:
     """Stream `url` to `dest`, retrying transient failures, atomically.
@@ -89,6 +129,14 @@ def download_with_retries(
     Writes to `dest` + `.part` and `os.replace`s onto `dest` only on
     success, so an interrupted run never leaves a truncated file that a
     later run's `dest.exists()` check would mistake for complete.
+
+    With `resume=True` a `.part` left by an earlier attempt -- in this call
+    or in a previous process -- is continued with a `Range` request instead
+    of being refetched from byte 0. Servers that ignore `Range` answer
+    `200` with the whole body, which is detected and restarts the write, so
+    a resumed file is never a mix of two responses. Whenever the server
+    declares a length, the finished `.part` is size-checked before it is
+    promoted onto `dest`.
 
     Parameters
     ----------
@@ -105,11 +153,21 @@ def download_with_retries(
     overwrite : bool, optional
         If False (default) and `dest` already exists, return immediately
         without making a network request.
+    resume : bool, optional
+        Continue from a leftover `<dest>.part` using an HTTP `Range`
+        request, and keep that `.part` when an attempt fails so the next
+        attempt (or run) picks up where it stopped. Default True.
 
     Returns
     -------
     Path
         `dest`, once fully and successfully written.
+
+    Raises
+    ------
+    RuntimeError
+        If every attempt fails, or the fetched byte count disagrees with
+        the size the server declared.
     """
     dest = Path(dest)
     if dest.exists() and not overwrite:
@@ -123,28 +181,69 @@ def download_with_retries(
     last_err: Exception | None = None
 
     for attempt in range(1, retries + 1):
+        offset = _partial_size(part_path) if resume else 0
         try:
-            req = Request(url, headers=headers)
-            with urlopen(req, timeout=timeout, context=ctx) as resp, open(part_path, "wb") as out:
-                while chunk := resp.read(chunk_size):
-                    out.write(chunk)
+            req_headers = dict(headers)
+            if offset:
+                req_headers["Range"] = f"bytes={offset}-"
+            req = Request(url, headers=req_headers)
+            with urlopen(req, timeout=timeout, context=ctx) as resp:
+                # A server free to ignore `Range` answers 200 with the entire
+                # body; appending that to what we already have would corrupt
+                # the file, so only 206 may append.
+                appending = bool(offset) and getattr(resp, "status", None) == 206
+                if not appending:
+                    offset = 0
+                total = _declared_total(resp, resp.headers)
+                if appending:
+                    logger.info("Resuming %s at %d bytes", dest.name, offset)
+                with open(part_path, "ab" if appending else "wb") as out:
+                    while chunk := resp.read(chunk_size):
+                        out.write(chunk)
+
+            written = _partial_size(part_path)
+            if total is not None and written != total:
+                # Too long means the `.part` is not a prefix of the resource
+                # (a stale or corrupt leftover); resuming can never repair
+                # that, so drop it and let the next attempt start clean.
+                if written > total:
+                    part_path.unlink(missing_ok=True)
+                raise OSError(f"Incomplete download: got {written} bytes, server declared {total}")
+
             os.replace(part_path, dest)
             return dest
+        except HTTPError as e:
+            last_err = e
+            if e.code == 416 and offset:
+                # The range is past the end of the resource: either the file
+                # finished and only the rename was lost, or the `.part` is
+                # stale. Only the exact-size case is safe to promote.
+                total = _content_length(url, headers, timeout, ctx)
+                if total is not None and _partial_size(part_path) == total:
+                    os.replace(part_path, dest)
+                    return dest
+                part_path.unlink(missing_ok=True)
+            _backoff(attempt, retries, backoff, url, e)
         except OSError as e:
             # HTTPError, URLError, TimeoutError, and ssl.SSLError are all OSError
             # subclasses; catching OSError directly also cleans up `.part` for a
             # plain local write failure (e.g. disk full), which the previous
-            # narrower tuple missed.
+            # narrower tuple missed. With `resume` the bytes already on disk are
+            # a valid prefix, so they are kept for the next attempt.
             last_err = e
-            part_path.unlink(missing_ok=True)
-            if attempt < retries:
-                sleep_for = backoff ** (attempt - 1)
-                logger.warning(
-                    "Retry %d/%d failed for %s: %s. Retrying in %.1fs...", attempt, retries, url, e, sleep_for
-                )
-                time.sleep(sleep_for)
+            if not resume:
+                part_path.unlink(missing_ok=True)
+            _backoff(attempt, retries, backoff, url, e)
 
     raise RuntimeError(f"Failed to download after {retries} attempts: {url}\nLast error: {last_err}")
+
+
+def _backoff(attempt: int, retries: int, backoff: float, url: str, err: Exception) -> None:
+    """Sleep between attempts, unless `attempt` was the last one."""
+    if attempt < retries:
+        sleep_for = backoff ** (attempt - 1)
+        logger.warning("Retry %d/%d failed for %s: %s. Retrying in %.1fs...", attempt, retries, url, err, sleep_for)
+        time.sleep(sleep_for)
 
 
 class BaseDownloader(ABC):
@@ -168,6 +267,7 @@ class BaseDownloader(ABC):
         timeout: int = 180,
         extract: bool = True,
         overwrite: bool = False,
+        resume: bool = True,
         dry_run: bool = False,
     ) -> None:
         self.outdir = Path(outdir)
@@ -177,6 +277,7 @@ class BaseDownloader(ABC):
         self.timeout = timeout
         self.extract = extract
         self.overwrite = overwrite
+        self.resume = resume
         self.dry_run = dry_run
 
     # ---- must implement --------------------------------------------- #
@@ -216,6 +317,7 @@ class BaseDownloader(ABC):
                 backoff=self.backoff,
                 timeout=self.timeout,
                 overwrite=self.overwrite,
+                resume=self.resume,
             )
         except Exception as e:  # noqa: BLE001 - one asset's failure must not abort the whole batch
             return DownloadResult(asset=asset, path=None, status="failed", error=str(e))
