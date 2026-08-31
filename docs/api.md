@@ -61,7 +61,6 @@ extra -- see [Installation](installation.md).
     :nosignatures:
 
     geojson_to_spatialdata
-    default_zarr_path
 ```
 
 :::{note}
