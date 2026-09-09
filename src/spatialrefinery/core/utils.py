@@ -17,10 +17,11 @@ from __future__ import annotations
 import logging
 import math
 import re
+import tarfile
 import zipfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import numpy as np
 import pandas as pd
@@ -96,6 +97,34 @@ def parse_curl_manifest(path: str | Path) -> list[str]:
         return list(iter_curl_urls(f))
 
 
+def collapse_url_slashes(url: str) -> str:
+    """Collapse repeated slashes in a URL's *path*, leaving the scheme alone.
+
+    10x's published manifests sometimes carry a doubled separator, e.g.
+    `.../spatial-exp/3.1.3//<study>/<study>_spatial.tar.gz`. `pathlib`
+    normalises that away when :func:`split_study_filename` derives the study
+    name, so the asset looks fine -- but the CDN answers the doubled path
+    with `403 Forbidden`. Without this, all 8 assets of one study in the
+    reference Visium manifest are silently undownloadable, and the failure
+    looks like a permissions problem rather than a typo.
+
+    Parameters
+    ----------
+    url : str
+        A download URL, possibly with a repeated slash in its path.
+
+    Returns
+    -------
+    str
+        The same URL with `//` runs in the path collapsed to `/`. Returned
+        unchanged when there is nothing to collapse.
+    """
+    parsed = urlparse(url)
+    if "//" not in parsed.path:
+        return url
+    return urlunparse(parsed._replace(path=re.sub(r"/{2,}", "/", parsed.path)))
+
+
 def split_study_filename(url: str) -> tuple[str, str]:
     """Split a download URL into `(study, filename)` from its last two path segments."""
     parsed = urlparse(url)
@@ -146,6 +175,130 @@ def safe_extract_zip(
         zf.extractall(dest_dir, members=names)
 
     return dest_dir
+
+
+def safe_extract_tar(
+    archive: str | Path,
+    dest_dir: str | Path | None = None,
+    *,
+    members: Iterable[str] | None = None,
+) -> Path:
+    """Extract a tar archive into `dest_dir`, rejecting any member that would escape it.
+
+    The tar analogue of :func:`safe_extract_zip`, needed because vendor
+    bundles ship `.tar.gz` where others ship `.zip`. Tar is the more
+    dangerous format, so two independent guards apply and neither is
+    redundant:
+
+    - Every member is validated *before* anything is written, so a crafted
+      archive writes nothing at all -- not even the members preceding the
+      bad one. Link members are refused outright: `tarfile` materialises
+      symlinks and hardlinks, and a vendor data bundle has no legitimate
+      reason to contain one, so refusing is cheaper to reason about than
+      validating every `linkname`.
+    - `filter="data"` catches what a name-only check cannot. The escape a
+      pre-check misses is two-member: member 1 is a symlink `foo -> /etc`,
+      member 2 is a regular file `foo/passwd`, so writing member 2 follows
+      the link out of `dest_dir` even though both names look safe. The
+      filter also strips setuid/setgid and world-writable modes and rejects
+      device/FIFO members, none of which `zipfile` can even create. It is
+      not optional: Python still defaults `TarFile.extraction_filter` to
+      `None` (i.e. `fully_trusted`), so omitting it means no guard at all.
+
+    The pre-check is kept even though `filter="data"` overlaps it, because
+    `tarfile.FilterError` is not a `ValueError` -- without it the two
+    extraction helpers would raise incompatible exception types for the
+    same class of malicious archive.
+
+    Not guarded: `filter="data"` places no bound on the decompression
+    ratio, and pre-checking uncompressed size on multi-GB archives is not
+    cheap. Accepted because these assets arrive from a trusted vendor CDN
+    over HTTPS.
+
+    Parameters
+    ----------
+    archive : str | Path
+        Path to the tar archive. Any compression `tarfile` understands is
+        accepted -- the mode is `"r:*"`, so `.tar`, `.tar.gz`/`.tgz`,
+        `.tar.bz2` and `.tar.xz` all work through this one function.
+        Which archives a downloader *chooses* to unpack is decided
+        separately, by `spatialrefinery.core.downloader._ARCHIVE_SUFFIXES`.
+    dest_dir : str | Path, optional
+        Directory to extract into. Default: the archive's own parent, i.e.
+        extraction in place.
+    members : Iterable[str], optional
+        Member names to extract. `None` (default) extracts everything.
+        Named for parity with :func:`safe_extract_zip`; note that
+        `tarfile.extractall` wants `TarInfo` objects where `zipfile` wants
+        names, so each name is resolved with `TarFile.getmember`.
+
+    Returns
+    -------
+    Path
+        The resolved `dest_dir`.
+
+    Raises
+    ------
+    ValueError
+        If a member is a link, or would be written outside `dest_dir`.
+    KeyError
+        If a name in `members` is not present in the archive.
+    tarfile.FilterError
+        If `filter="data"` rejects a member the pre-check let through.
+    """
+    archive = Path(archive)
+    dest_dir = Path(dest_dir).resolve() if dest_dir is not None else archive.parent.resolve()
+
+    with tarfile.open(archive, "r:*") as tf:
+        infos = tf.getmembers() if members is None else [tf.getmember(name) for name in members]
+        for info in infos:
+            if info.issym() or info.islnk():
+                raise ValueError(f"Refusing to extract link member from tar archive: {info.name!r}")
+            member_path = (dest_dir / info.name).resolve()
+            if not (member_path == dest_dir or member_path.is_relative_to(dest_dir)):
+                raise ValueError(f"Unsafe path in tar archive (tar-slip): {info.name!r}")
+        tf.extractall(dest_dir, members=infos, filter="data")
+
+    return dest_dir
+
+
+def tar_root_dir(archive: str | Path) -> str | None:
+    """Return the single top-level directory a tar archive unpacks into, or None.
+
+    A caller extracting in place needs to know whether an archive brings
+    its own directory. `<study>_spatial.tar.gz`, whose members all start
+    `spatial/`, unpacks safely beside its siblings; a *flat* archive with
+    `matrix.mtx.gz` at its root would overwrite any sibling archive
+    shipping a member of the same name -- and because downloads are
+    extracted from a thread pool, two such archives can even be writing
+    concurrently. Reading the headers is the only way to tell them apart,
+    and it costs one decompression pass: cheap next to the download that
+    produced the archive, and far cheaper than losing a count matrix.
+
+    Parameters
+    ----------
+    archive : str | Path
+        Path to the tar archive.
+
+    Returns
+    -------
+    str | None
+        The name of the directory every member lives under, or `None` if
+        the archive writes anything at all directly into its destination
+        (including the case of several distinct top-level entries).
+    """
+    roots: set[str] = set()
+    with tarfile.open(archive, "r:*") as tf:
+        for info in tf.getmembers():
+            parts = Path(info.name).parts
+            if not parts or parts[0] in (".", ".."):
+                continue
+            # A non-directory at the archive root means extraction writes a
+            # file straight into dest_dir, which is the clobber case.
+            if len(parts) == 1 and not info.isdir():
+                return None
+            roots.add(parts[0])
+    return roots.pop() if len(roots) == 1 else None
 
 
 # --------------------------------------------------------------------- #

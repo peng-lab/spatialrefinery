@@ -20,14 +20,17 @@ from spatialrefinery.core.utils import (
     assign_points_to_hexes,
     bin_centroids,
     bin_points_to_hex_counts,
+    collapse_url_slashes,
     hex_candidate_offsets,
     hex_grid_centroids,
     hex_lattice_params,
     human_bytes,
     parse_curl_manifest,
+    safe_extract_tar,
     safe_extract_zip,
     slide_stem,
     split_study_filename,
+    tar_root_dir,
     transform_name,
 )
 
@@ -92,6 +95,27 @@ def test_split_study_filename() -> None:
     assert (study, filename) == ("study_a", "file_outs.zip")
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # 10x ships this doubled separator in real manifests; the CDN answers
+        # the doubled path with 403, so it must be collapsed before download.
+        (
+            "https://example.com/samples/3.1.3//study_a/study_a_spatial.tar.gz",
+            "https://example.com/samples/3.1.3/study_a/study_a_spatial.tar.gz",
+        ),
+        # Nothing to collapse: returned untouched.
+        ("https://example.com/s/study_a/f.zip", "https://example.com/s/study_a/f.zip"),
+        # The scheme's own `//` must survive, which is why this operates on the
+        # parsed path rather than the whole string.
+        ("https://example.com//study_a//f.zip", "https://example.com/study_a/f.zip"),
+    ],
+)
+def test_collapse_url_slashes(url: str, expected: str) -> None:
+    """A repeated slash in the path is a manifest typo the server rejects, not a no-op."""
+    assert collapse_url_slashes(url) == expected
+
+
 def test_split_study_filename_too_short_raises() -> None:
     with pytest.raises(ValueError, match="Cannot determine study"):
         split_study_filename("https://example.com/file_outs.zip")
@@ -134,6 +158,93 @@ def test_safe_extract_zip_extracts_safe_members(tmp_path) -> None:
     dest.mkdir()
     safe_extract_zip(archive, dest)
     assert (dest / "nested" / "file.txt").read_text() == "hello"
+
+
+def _write_tar(path, entries: list[tuple[str, bytes | None]]) -> None:
+    """Write a `.tar.gz` at `path`; a `None` payload makes the entry a symlink to `/etc`."""
+    import io
+    import tarfile
+
+    with tarfile.open(path, "w:gz") as tf:
+        for name, payload in entries:
+            info = tarfile.TarInfo(name)
+            if payload is None:
+                info.type = tarfile.SYMTYPE
+                info.linkname = "/etc"
+                tf.addfile(info)
+            else:
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+
+
+def test_safe_extract_tar_extracts_safe_members(tmp_path) -> None:
+    """The happy path: a nested member round-trips, mirroring the zip helper's test."""
+    archive = tmp_path / "ok.tar.gz"
+    _write_tar(archive, [("nested/file.txt", b"hello")])
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    safe_extract_tar(archive, dest)
+    assert (dest / "nested" / "file.txt").read_bytes() == b"hello"
+
+
+def test_safe_extract_tar_rejects_tar_slip(tmp_path) -> None:
+    """A traversing member raises `ValueError` and writes nothing.
+
+    The exception type is load-bearing, not incidental: `tarfile.FilterError`
+    is not a `ValueError`, so without the explicit pre-check the tar and zip
+    helpers would raise incompatible types for the same malicious archive.
+    """
+    archive = tmp_path / "evil.tar.gz"
+    _write_tar(archive, [("../../escaped.txt", b"gotcha")])
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with pytest.raises(ValueError, match="tar-slip"):
+        safe_extract_tar(archive, dest)
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_safe_extract_tar_rejects_link_members(tmp_path) -> None:
+    """A symlink member is refused, which no zip archive can even express.
+
+    This is the two-member escape a name-only check cannot see: member 1 is
+    a symlink `foo -> /etc`, member 2 is a regular file `foo/passwd`, so
+    writing member 2 would follow the link out of `dest_dir` even though
+    both *names* resolve inside it.
+    """
+    archive = tmp_path / "link.tar.gz"
+    _write_tar(archive, [("foo", None), ("foo/passwd", b"pwned")])
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with pytest.raises(ValueError, match="link member"):
+        safe_extract_tar(archive, dest)
+    assert not (dest / "foo").exists()
+
+
+def test_tar_root_dir_names_a_self_contained_archive(tmp_path) -> None:
+    """An archive whose members all live under one directory can extract in place."""
+    archive = tmp_path / "spatial.tar.gz"
+    _write_tar(archive, [("spatial/scalefactors_json.json", b"{}"), ("spatial/tissue_positions.csv", b"x")])
+    assert tar_root_dir(archive) == "spatial"
+
+
+@pytest.mark.parametrize(
+    ("entries", "reason"),
+    [
+        # A file at the archive root: extracting in place would drop it beside
+        # its siblings, where a same-named member of another archive clobbers it.
+        ([("matrix.mtx.gz", b"x"), ("barcodes.tsv.gz", b"y")], "flat"),
+        # Several distinct top-level entries: no single directory to report.
+        ([("a/one.txt", b"x"), ("b/two.txt", b"y")], "multiple roots"),
+    ],
+)
+def test_tar_root_dir_returns_none_when_not_self_contained(tmp_path, entries, reason: str) -> None:
+    """Anything written at the destination's own level must report `None`."""
+    archive = tmp_path / "flat.tar.gz"
+    _write_tar(archive, entries)
+    assert tar_root_dir(archive) is None, reason
 
 
 # --------------------------------------------------------------------- #

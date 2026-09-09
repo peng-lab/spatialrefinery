@@ -31,6 +31,7 @@ xenium_example/
 /graphify-out/
 /slurm/
 /slurm-logs/
+/experimental/
 
 # ...except the segmentation pipeline's documented entry points: the tutorial
 # notebook and the two CLI wrappers. The SLURM scripts stay untracked -- they

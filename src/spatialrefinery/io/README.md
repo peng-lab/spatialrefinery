@@ -104,6 +104,75 @@ failures, writes atomically so an interrupted download never leaves a
 truncated file, and unzips `*_outs.zip` assets in place (skipping
 `*_xe_outs.zip`).
 
+## Visium Data Download
+
+```python
+from spatialrefinery.io.visium import VisiumDownloader, download_visium_study
+
+results = download_visium_study(
+    source="example_data/10x_visium_human.txt",  # a `curl -O <url>` manifest
+    outdir="/path/to/raw_files",
+    kinds=["spatial", "filtered_matrix", "tissue_image", "cloupe"],  # optional
+    max_workers=8,
+)
+```
+
+Same engine as above, with two differences that matter. Visium ships
+`.tar.gz` rather than `.zip`, and those archives are unpacked **in place**,
+so a bundle ends up flat with `spatial/` beside it -- exactly the layout
+`spatialdata_io.visium` expects, which is why no staging copy or symlink of
+the counts matrix is needed:
+
+```
+raw_files/CytAssist_FFPE_Human_Colon_Rep1/
+├── CytAssist_FFPE_Human_Colon_Rep1_filtered_feature_bc_matrix.h5
+├── CytAssist_FFPE_Human_Colon_Rep1_tissue_image.btf     # microscope H&E
+├── CytAssist_FFPE_Human_Colon_Rep1_image.tif            # CytAssist capture
+├── CytAssist_FFPE_Human_Colon_Rep1_cloupe.cloupe
+├── CytAssist_FFPE_Human_Colon_Rep1_alignment_file.json
+├── CytAssist_FFPE_Human_Colon_Rep1_probe_set.csv
+├── CytAssist_FFPE_Human_Colon_Rep1_spatial.tar.gz       # kept
+├── spatial/                                             # unpacked
+│   ├── scalefactors_json.json
+│   ├── tissue_positions.csv
+│   └── tissue_hires_image.png, tissue_lowres_image.png, ...
+├── analysis/                                            # unpacked
+├── deconvolution/                                       # unpacked
+└── ..._filtered_feature_bc_matrix.tar.gz                # NOT unpacked
+```
+
+The two `*_feature_bc_matrix.tar.gz` archives stay packed: they are MTX
+triplets of the `.h5` files fetched alongside, so unpacking them roughly
+doubles a bundle's size for no new information.
+
+Second, each study is checked on disk once its assets settle. That check is
+shared -- `BaseDownloader.verify_bundle` -- and each technology configures it
+with four class-level tuples:
+
+```python
+VisiumDownloader.verify_bundle("/path/to/raw_files/CytAssist_FFPE_Human_Colon_Rep1")
+# BundleCheck(study=..., present=frozenset({...}), missing_required=(),
+#             missing_members=(), missing_expected=())
+```
+
+`BundleCheck` reports two vocabularies, because their failures have different
+causes. **Kinds** come from classifying the files that were fetched, so a
+missing required kind means an asset was never downloaded. **Members** are
+globs expected *inside* the bundle, so a missing required member means an
+archive did not unpack -- which nothing in the download results can reveal,
+since the bytes arrived intact.
+
+| | `required_kinds` | `required_members` |
+| --- | --- | --- |
+| Visium | `spatial`, `filtered_matrix`, `tissue_image` | `spatial/scalefactors_json.json`, `spatial/tissue_positions*.csv` |
+
+On top of the generic pass, `VisiumDownloader` calls out a missing `.cloupe`
+by name -- it is the usual place to look for a slide's provenance, and easy to
+miss in a list of kinds.
+
+Missing assets are logged, not raised: 10x's own manifests are incomplete for
+some studies, and one study's gap is no reason to abandon the rest of a batch.
+
 ### Helper Functions
 
 Most helpers below are technology-agnostic and actually live in
