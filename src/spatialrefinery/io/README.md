@@ -160,15 +160,19 @@ causes. **Kinds** come from classifying the files that were fetched, so a
 missing required kind means an asset was never downloaded. **Members** are
 globs expected *inside* the bundle, so a missing required member means an
 archive did not unpack -- which nothing in the download results can reveal,
-since the bytes arrived intact.
+since the bytes arrived intact. For Visium the two nearly coincide; for
+Xenium, whose payload arrives inside `*_outs.zip` with unprefixed member
+names, only the member check says anything useful.
 
 | | `required_kinds` | `required_members` |
 | --- | --- | --- |
+| Xenium | `outs` | `experiment.xenium`, `transcripts.parquet`, `cells.parquet`, `cell_boundaries.parquet`, `nucleus_boundaries.parquet`, `cell_feature_matrix.h5` |
 | Visium | `spatial`, `filtered_matrix`, `tissue_image` | `spatial/scalefactors_json.json`, `spatial/tissue_positions*.csv` |
 
-On top of the generic pass, `VisiumDownloader` calls out a missing `.cloupe`
-by name -- it is the usual place to look for a slide's provenance, and easy to
-miss in a list of kinds.
+Each downloader then adds the one check its technology needs and the generic
+pass cannot express: Visium calls out a missing `.cloupe` by name, and Xenium
+flags an H&E that has no alignment CSV -- which converts without error but
+lands on an Identity transform, silently unaligned.
 
 Missing assets are logged, not raised: 10x's own manifests are incomplete for
 some studies, and one study's gap is no reason to abandon the rest of a batch.

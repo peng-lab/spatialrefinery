@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Fixed
+
+- `spatialrefinery.io.xenium`: `*_he_alignment.csv` -- the name the Atera "WTA
+  Preview" bundles use instead of 10x's `*_he_imagealignment.csv` -- was
+  missing from the asset-kind map, so those files classified as `"unknown"`
+  and `kinds=["he_alignment"]` silently skipped them. `find_xenium_files`
+  already recognised both spellings.
+
 ### Added
 
 - `spatialrefinery.core`: a technology/converter registry (`registry`), shared
@@ -34,6 +42,10 @@ and this project adheres to [Semantic Versioning][].
   extracted *members* separately, because a missing kind means an asset was
   never downloaded whereas a missing member means an archive did not unpack --
   a failure invisible in the download results, since the bytes arrived intact.
+  Xenium verifies the six members `spatialdata_io.xenium` opens, and flags an
+  H&E that has no alignment CSV: it converts without error but lands on an
+  Identity transform, silently unaligned, and 3 of 65 sample bundles are in
+  that state.
 - `spatialrefinery.core.utils.collapse_url_slashes`, applied in
   `RemoteAsset.from_url`: some published 10x manifests carry a doubled path
   separator (`.../spatial-exp/3.1.3//<study>/...`), which the CDN answers
