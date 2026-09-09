@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -787,6 +787,12 @@ _XENIUM_KINDS: dict[str, str] = {
     "_if_image.ome.tif": "if_image",
     "_if_imagealignment.csv": "if_alignment",
     "_he_imagealignment.csv": "he_alignment",
+    # 10x's own name is `*_he_imagealignment.csv`, but bundles from other
+    # pipelines (the Atera "WTA Preview" sets) ship `*_he_alignment.csv`.
+    # `find_xenium_files` already globs both; without this entry the Atera
+    # variant downloads as kind "unknown", so `kinds=["he_alignment"]`
+    # silently skips it.
+    "_he_alignment.csv": "he_alignment",
     "_gene_groups.csv": "gene_groups",
     "_cell_groups.csv": "cell_groups",
     "_gene_list.csv": "gene_list",
@@ -806,6 +812,38 @@ class XeniumDownloader(BaseDownloader):
     # `*_xe_outs.zip` (10x Xenium Explorer bundles) are large auxiliary
     # archives not needed for SpatialData conversion; never auto-extract them.
     never_extract = frozenset({"xe_outs"})
+
+    # Only `outs` is required as a *kind*, because a Xenium bundle's payload
+    # arrives inside `*_outs.zip`: the extracted members are unprefixed
+    # (`transcripts.parquet`, ...) and so all classify as `"unknown"`. The
+    # real completeness signal is therefore `required_members`, not kinds --
+    # the reverse of Visium, whose downloaded assets *are* its members.
+    required_kinds = ("outs",)
+    # Deliberately empty. The H&E and its alignment CSV are the two worth
+    # reporting, but a *kind* check gets them wrong: 3 reference bundles ship
+    # `_he_unaligned_image.ome.tif` instead of `_he_image.ome.tif`, so the
+    # `he_image` kind is legitimately absent while an H&E is right there.
+    # `post_process` below reports both through `find_xenium_files`, which
+    # globs every naming variant and is what `XeniumConverter.supports` uses.
+    expected_kinds = ()
+    # What `spatialdata_io.xenium` actually opens. Deliberately *not* the full
+    # set of 16 members present in all 65 reference bundles: the `.csv.gz` and
+    # `.zarr.zip` duplicates of these same tables get pruned to reclaim disk on
+    # a shared filesystem, and a slimmed bundle that still converts must not be
+    # reported broken.
+    required_members = (
+        "experiment.xenium",
+        "transcripts.parquet",
+        "cells.parquet",
+        "cell_boundaries.parquet",
+        "nucleus_boundaries.parquet",
+        "cell_feature_matrix.h5",
+    )
+    # `morphology_focus` is a flat OME-TIFF in 33 of the 65 reference bundles
+    # and a directory of tiles in the other 32, hence the trailing glob; it is
+    # expected rather than required because whether it is read at all depends
+    # on `xenium_to_spatialdata`'s `morphology_focus` flag.
+    expected_members = ("gene_panel.json", "morphology.ome.tif", "morphology_focus*")
 
     @staticmethod
     def classify(filename: str) -> str:
@@ -831,6 +869,31 @@ class XeniumDownloader(BaseDownloader):
                 study=asset.study,
                 filename=asset.filename,
                 kind=self.classify(asset.filename),
+            )
+
+    def post_process(self, study: str, results: Sequence[DownloadResult]) -> None:
+        """Verify the bundle, then report on the H&E and its alignment file.
+
+        The alignment case is the one worth shouting about, and the generic
+        kind check cannot see it: an H&E with no alignment CSV downloads
+        cleanly and converts without error, but lands on an Identity
+        transform -- silently unaligned, and `tissue_contours` with it. 3 of
+        the 65 reference bundles are in exactly that state. An H&E that is
+        merely absent is benign by comparison, so it is only logged.
+        """
+        super().post_process(study, results)
+        if self.dry_run:
+            return
+
+        files = find_xenium_files(self.outdir / study)
+        if files["img_path"] is None:
+            logger.info("%s: no H&E image; convert with include_aligned_image=False", study)
+        elif files["alignment_file_path"] is None:
+            logger.error(
+                "%s: H&E %s has no alignment CSV; it would be attached on an Identity transform, "
+                "silently unaligned, and tissue_contours with it",
+                study,
+                files["img_path"].name,
             )
 
 

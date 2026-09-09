@@ -29,12 +29,28 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import spatialrefinery
-from spatialrefinery.core.utils import ensure_dir, safe_extract_zip, split_study_filename
+from spatialrefinery.core.utils import (
+    collapse_url_slashes,
+    ensure_dir,
+    safe_extract_tar,
+    safe_extract_zip,
+    split_study_filename,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = f"spatialrefinery/{spatialrefinery.__version__} (+python-stdlib)"
 DEFAULT_CHUNK_SIZE = 1024 * 1024
+
+#: Archive suffixes `BaseDownloader.should_extract` recognises. Matched
+#: against the whole lowered filename rather than `Path.suffix`, which is
+#: single-part: for `a_spatial.tar.gz` it returns `.gz`, which is why
+#: tarballs fell straight through the earlier `suffix == ".zip"` check and
+#: were never unpacked. A bare `.gz` is deliberately absent -- a gzip
+#: stream carries no member list, so "extract in place" has no defined
+#: output path; decompressing `x.csv.gz` is a different operation, and
+#: `tarfile.open(..., "r:*")` raises on one anyway.
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar", ".tar.bz2", ".tar.xz", ".zip")
 
 Status = Literal["downloaded", "cached", "skipped", "failed"]
 
@@ -51,7 +67,13 @@ class RemoteAsset:
 
     @classmethod
     def from_url(cls, url: str, *, kind: str = "unknown") -> RemoteAsset:
-        """Build a `RemoteAsset` from a URL, deriving `study`/`filename` from its path."""
+        """Build a `RemoteAsset` from a URL, deriving `study`/`filename` from its path.
+
+        The URL is slash-normalised first, so a manifest typo cannot produce
+        an asset that resolves correctly but 403s on download -- see
+        :func:`spatialrefinery.core.utils.collapse_url_slashes`.
+        """
+        url = collapse_url_slashes(url)
         study, filename = split_study_filename(url)
         return cls(url=url, study=study, filename=filename, kind=kind)
 
@@ -74,8 +96,52 @@ class DownloadResult:
         which never touches the network or checks whether `path` actually
         exists -- reporting it as `ok` would make every dry-run asset look
         usable regardless of whether anything is really on disk.
+
+        Note that `"failed"` does not imply `path is None`: an asset whose
+        bytes downloaded cleanly but whose archive would not unpack fails
+        with `path` set, so a caller can still find the broken file (see
+        `BaseDownloader.require_extract`).
         """
         return self.status in ("downloaded", "cached")
+
+
+@dataclass(frozen=True, slots=True)
+class BundleCheck:
+    """What one study's bundle does and does not have on disk after a download.
+
+    Reports two independent vocabularies, because for most technologies they
+    differ and their failures have different causes:
+
+    - **kinds** are the semantic labels a downloader's `classify` assigns to
+      the *files it fetched*. A missing required kind means an asset was never
+      downloaded, or the upstream manifest never listed it.
+    - **members** are literal paths expected *inside* the bundle. A missing
+      required member means an archive did not unpack, or unpacked partially
+      -- which no amount of inspecting the download results can reveal, since
+      the bytes arrived correctly.
+
+    For a technology whose downloaded assets *are* its bundle members (10x
+    Visium, say) the two nearly coincide. For one that ships its payload
+    inside an archive (10x Xenium, whose members arrive unprefixed inside
+    `*_outs.zip` and so all classify as `"unknown"`) only the member check
+    says anything useful.
+    """
+
+    study: str
+    present: frozenset[str]
+    missing_required: tuple[str, ...]
+    missing_members: tuple[str, ...]
+    missing_expected: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        """Whether the bundle carries everything a conversion needs.
+
+        Only the *required* sets count. Expected-but-absent items are
+        reported so a caller can see them, never so a usable bundle is
+        marked broken: vendors genuinely omit assets for some studies.
+        """
+        return not self.missing_required and not self.missing_members
 
 
 def _partial_size(part_path: Path) -> int:
@@ -254,8 +320,28 @@ class BaseDownloader(ABC):
     """
 
     technology: ClassVar[str] = "base"
-    #: asset kinds that must never be auto-extracted even if they are .zip
+    #: asset kinds that must never be auto-extracted even if they are archives
     never_extract: ClassVar[frozenset[str]] = frozenset()
+    #: asset kinds whose archive is load-bearing: if extraction fails, the
+    #: asset itself fails rather than merely warning. Without this a corrupt
+    #: archive reports `status="downloaded"`, `ok=True`, and only resurfaces
+    #: stages later as a missing file a long way from its cause. Empty by
+    #: default, so existing subclasses keep the warn-only behaviour.
+    require_extract: ClassVar[frozenset[str]] = frozenset()
+
+    # ---- bundle verification (see `verify_bundle`) ------------------- #
+    #: asset kinds without which the bundle cannot be converted at all
+    required_kinds: ClassVar[tuple[str, ...]] = ()
+    #: asset kinds worth reporting when absent, but which must not block
+    expected_kinds: ClassVar[tuple[str, ...]] = ()
+    #: glob patterns, relative to the bundle directory, that must match
+    #: something once every archive has been unpacked. Globs rather than
+    #: exact names so one pattern covers a vendor's naming variants -- e.g.
+    #: `tissue_positions*.csv` matches both the Space Ranger >= 2.0 name and
+    #: the 1.x `tissue_positions_list.csv`.
+    required_members: ClassVar[tuple[str, ...]] = ()
+    #: glob patterns reported when they match nothing, but not blocking
+    expected_members: ClassVar[tuple[str, ...]] = ()
 
     def __init__(
         self,
@@ -295,11 +381,119 @@ class BaseDownloader(ABC):
         return self.outdir / asset.study / asset.filename
 
     def should_extract(self, asset: RemoteAsset, path: Path) -> bool:
-        """Whether `path` should be unzipped in place after downloading."""
-        return self.extract and path.suffix.lower() == ".zip" and asset.kind not in self.never_extract
+        """Whether `path` should be unpacked in place after downloading."""
+        return self.extract and path.name.lower().endswith(_ARCHIVE_SUFFIXES) and asset.kind not in self.never_extract
 
-    def post_process(self, study: str, results: Sequence[DownloadResult]) -> None:  # noqa: B027
-        """Hook called once per study after all its assets settle. Default: no-op."""
+    def extract_archive(self, asset: RemoteAsset, path: Path) -> Path:
+        """Unpack `path` beside itself, dispatching on its archive format.
+
+        Override this to place an archive's contents somewhere other than
+        `path.parent` -- e.g. to give a *flat* archive a directory of its
+        own so it cannot overwrite a sibling (see
+        `spatialrefinery.io.visium.VisiumDownloader.extract_archive`).
+        """
+        if path.name.lower().endswith(".zip"):
+            return safe_extract_zip(path, path.parent)
+        return safe_extract_tar(path, path.parent)
+
+    @staticmethod
+    def classify(filename: str) -> str:
+        """Return the semantic asset kind for `filename`.
+
+        Override with the technology's suffix map. The default labels
+        everything `"unknown"`, which is honest for a subclass that has not
+        defined one -- `verify_bundle` then reports on members only.
+        """
+        return "unknown"
+
+    @classmethod
+    def verify_bundle(cls, bundle_dir: str | Path, *, study: str | None = None) -> BundleCheck:
+        """Report what one study's bundle has on disk, against this technology's expectations.
+
+        Reads the filesystem rather than a run's `DownloadResult`s, which is
+        what makes it a verification instead of an echo: an archive whose
+        bytes arrived intact but which unpacked to nothing is indistinguishable
+        from a working bundle in the results, and shows up here as a missing
+        required member.
+
+        A classmethod because everything it needs is class-level
+        configuration, so an already-downloaded bundle can be checked without
+        constructing a downloader or knowing its `outdir`.
+
+        Parameters
+        ----------
+        bundle_dir : str | Path
+            The bundle directory, i.e. `outdir/<study>` after a download.
+        study : str, optional
+            Name recorded on the result. Defaults to the directory's own name.
+
+        Returns
+        -------
+        BundleCheck
+            The report. Never raises for a missing or empty directory -- a
+            study whose every asset failed leaves nothing behind, and that is
+            a result to report, not an error.
+        """
+        bundle_dir = Path(bundle_dir)
+
+        present = {cls.classify(p.name) for p in bundle_dir.glob("*") if p.is_file()}
+        present.discard("unknown")
+
+        def absent(patterns: tuple[str, ...]) -> tuple[str, ...]:
+            # `next(iter(...), None)` so a directory member counts as present:
+            # 10x ships `morphology_focus` as a flat OME-TIFF in older bundles
+            # and as a directory of tiles in newer ones.
+            return tuple(p for p in patterns if next(iter(bundle_dir.glob(p)), None) is None)
+
+        return BundleCheck(
+            study=study if study is not None else bundle_dir.name,
+            present=frozenset(present),
+            missing_required=tuple(k for k in cls.required_kinds if k not in present),
+            missing_members=absent(cls.required_members),
+            # Kinds and members are merged here: they are different vocabularies,
+            # but for something that is only ever reported the distinction would
+            # not change what a reader does about it.
+            missing_expected=tuple(k for k in cls.expected_kinds if k not in present) + absent(cls.expected_members),
+        )
+
+    def post_process(self, study: str, results: Sequence[DownloadResult]) -> None:
+        """Verify `study`'s bundle on disk and log what is missing.
+
+        Logged rather than raised so a batch over many studies completes: an
+        incomplete upstream manifest is a fact about one study, not a reason
+        to discard the others. Subclasses that add technology-specific checks
+        should call `super().post_process(...)` first.
+        """
+        if self.dry_run:
+            # Nothing was written, so there is nothing on disk to inspect.
+            return
+        if not (self.required_kinds or self.required_members or self.expected_kinds or self.expected_members):
+            return
+
+        check = self.verify_bundle(self.outdir / study, study=study)
+        logger.info(
+            "%s: %d/%d asset(s) usable, kinds present: %s",
+            study,
+            sum(1 for r in results if r.ok),
+            len(results),
+            ", ".join(sorted(check.present)) or "<none>",
+        )
+        if check.missing_required:
+            logger.warning(
+                "%s: missing required asset kind(s) %s; this bundle cannot be converted as-is",
+                study,
+                ", ".join(check.missing_required),
+            )
+        if check.missing_members:
+            # An archive that downloaded but did not unpack lands here. Logged
+            # at error level because every downstream reader opens these paths.
+            logger.error(
+                "%s: bundle is incomplete on disk, missing %s -- did an archive fail to unpack?",
+                study,
+                ", ".join(check.missing_members),
+            )
+        if check.missing_expected:
+            logger.warning("%s: missing expected %s", study, ", ".join(check.missing_expected))
 
     # ---- concrete engine ----------------------------------------------- #
     def fetch(self, asset: RemoteAsset) -> DownloadResult:
@@ -325,8 +519,12 @@ class BaseDownloader(ABC):
         extracted_to = None
         if self.should_extract(asset, dest):
             try:
-                extracted_to = safe_extract_zip(dest, dest.parent)
+                extracted_to = self.extract_archive(asset, dest)
             except Exception as e:  # noqa: BLE001 - a bad archive shouldn't fail an otherwise-successful download
+                if asset.kind in self.require_extract:
+                    # `path` is kept so the caller can inspect (or delete) the
+                    # archive that would not unpack.
+                    return DownloadResult(asset=asset, path=dest, status="failed", error=f"Extraction failed: {e}")
                 logger.warning("Extraction failed for %s: %s", dest, e)
 
         status: Status = "cached" if already_present else "downloaded"

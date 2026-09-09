@@ -1,14 +1,17 @@
 # API reference
 
 This page documents the functions used in the [tutorial notebooks](tutorials.md): the two entry points for pulling raw
-Xenium data and converting it to a [SpatialData](https://spatialdata.scverse.org/en/stable/) zarr store, the one entry
-point for converting whole-slide images to pyramidal OME-TIFF, and the two that carry an H&E slide through nucleus
-segmentation. The first four are importable directly off the top-level package; the segmentation pair is reached through
+vendor data, the two for converting a Xenium bundle to a
+[SpatialData](https://spatialdata.scverse.org/en/stable/) zarr store, the one for converting whole-slide images to
+pyramidal OME-TIFF, and the two that carry an H&E slide through nucleus segmentation. All but the last pair are
+importable directly off the top-level package; the segmentation pair is reached through
 `spatialrefinery.segmentation`, since it needs the optional `segmentation` extra.
 
 ## Downloading
 
-Fetch a 10x Genomics Xenium study's raw asset bundle from a `curl -O <url>` manifest.
+Fetch a 10x Genomics study's raw asset bundle from a `curl -O <url>` manifest. Both downloaders retry transient
+failures and write atomically, and unpack their technology's archives in place -- `*_outs.zip` for Xenium,
+`spatial`/`analysis`/`deconvolution` tarballs for Visium.
 
 ```{eval-rst}
 .. currentmodule:: spatialrefinery
@@ -18,6 +21,7 @@ Fetch a 10x Genomics Xenium study's raw asset bundle from a `curl -O <url>` mani
     :nosignatures:
 
     download_xenium_study
+    download_visium_study
 ```
 
 ## Converting

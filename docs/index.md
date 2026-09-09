@@ -40,7 +40,8 @@ convert_to_ometiff(source="raw_files/my_study/slide.svs", output_dir="processed"
 :gutter: 3
 
 :::{grid-item-card} {octicon}`download;1.5em` Download
-Fetch a Xenium study's raw assets from a `curl -O <url>` manifest, with retries, atomic writes, and parallel workers.
+Fetch a Xenium or Visium study's raw assets from a `curl -O <url>` manifest, with retries, atomic writes, parallel
+workers, and archives unpacked in place.
 :::
 
 :::{grid-item-card} {octicon}`file-binary;1.5em` Convert to SpatialData
@@ -70,6 +71,9 @@ any zoom level.
 * - Download a Xenium study's raw assets
   - {py:obj}`~spatialrefinery.download_xenium_study`
   - [Downloading Xenium data](notebooks/xenium_download)
+* - Download a Visium / CytAssist study's raw assets
+  - {py:obj}`~spatialrefinery.download_visium_study`
+  - Same manifest format and options as [Downloading Xenium data](notebooks/xenium_download)
 * - Convert a Xenium bundle to a SpatialData zarr store
   - {py:obj}`~spatialrefinery.xenium_to_spatialdata`
   - [Xenium to SpatialData zarr](notebooks/xenium_to_zarr)
