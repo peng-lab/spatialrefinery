@@ -22,6 +22,10 @@ zarr store with pseudo-spots binned at whatever sizes a given resolution needs (
 paired whole-slide image to a pyramidal OME-TIFF for fast viewing. Run it over a batch of raw bundles and you get one
 common, multi-resolution dataset to train Phoenix on.
 
+Samples stay comparable even when the assay is not. A protein sub-panel's antibody measurements are kept in the cell
+table's `obsm`, so the table's `var` is that sample's gene panel whether or not antibodies were run, and a batch can
+mix the two without downstream code branching on it.
+
 The same pipeline also runs on histology that has no paired Xenium run: nucleus segmentation turns an H&E slide into a
 SpatialData store of nucleus boundaries with an empty table over a gene panel -- the shape Phoenix predicts into.
 

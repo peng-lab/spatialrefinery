@@ -5,6 +5,14 @@ Covers the H&E channel-layout probe, which exists because
 shape alone and asserts on anything that is not 10x's interleaved layout.
 Slides are synthesised as small OME-TIFFs written in each layout.
 
+Also covers the feature-type split. A Xenium cell-feature matrix mixes the
+targeted gene panel with control and codeword classes, and a protein
+sub-panel adds one row per antibody; panel sizes differ per sample, so the
+tests assert on structure rather than on counts. Antibodies cannot stay on
+the gene axis because one can share a gene's name, and the split has to run
+for plain samples too, since the reader is asked for every feature type.
+Tables are synthesised in memory -- a real matrix only comes from a bundle.
+
 Also covers bundle verification, whose Xenium shape is the inverse of
 Visium's: the payload arrives inside `*_outs.zip` with unprefixed member
 names, so kind classification only ever sees `outs` and the real
@@ -146,6 +154,179 @@ def test_aggregate_transcripts_hex_raises_when_nothing_is_counted() -> None:
     elsewhere = hex_lattice_params((1e6, 1e6, 1e6 + 400.0, 1e6 + 400.0), 55.0, overlap)
     with pytest.raises(ValueError, match="produced no counts at all"):
         _aggregate_transcripts_hex(sdata, "spots_55um", elsewhere, overlap)
+
+
+# --------------------------------------------------------------------- #
+# Protein sub-panel split
+# --------------------------------------------------------------------- #
+
+#: Antibody names, in the order `_make_protein_table` lays them out in `var`.
+PROTEIN_NAMES = ("CD4", "PD-1")
+
+#: The `gene_ids` 10x gives those antibodies -- `TXP...`, not `ENSG...`.
+PROTEIN_IDS = ("TXP000007", "TXP000019")
+
+
+def _make_protein_table(n_cells: int = 6):
+    """A Xenium-shaped cell table mixing gene, control and antibody features.
+
+    Mirrors how a real matrix is laid out -- Gene Expression first, control and
+    codeword rows next, antibodies last -- at a size small enough to assert on.
+    Panel sizes vary per sample, so nothing here depends on the count. What does
+    matter is that one antibody carries a gene's name (`CD4`): that collision is
+    what makes `var_names` non-unique on a real protein sub-panel, and is the
+    whole reason the antibodies cannot stay in `var`.
+    """
+    import warnings
+
+    import anndata as ad
+    import pandas as pd
+    from scipy.sparse import csr_matrix
+
+    names = ["ACTA2", "CD4", "VIM", "NegControlProbe_00001", "UnassignedCodeword_0001", "CD4", "PD-1"]
+    feature_types = [
+        "Gene Expression",
+        "Gene Expression",
+        "Gene Expression",
+        "Negative Control Probe",
+        "Unassigned Codeword",
+        "Protein Expression",
+        "Protein Expression",
+    ]
+    gene_ids = ["ENSG01", "ENSG02", "ENSG03", "NegControlProbe_00001", "UnassignedCodeword_0001", *PROTEIN_IDS]
+
+    values = np.random.default_rng(7).integers(0, 20, (n_cells, len(names))).astype(np.float32)
+    # Antibody columns are per-cell stain means, not counts, so they are fractional after the
+    # reader divides them by the h5's `protein_scaling_factor`.
+    values[:, -len(PROTEIN_NAMES) :] += 0.5
+
+    with warnings.catch_warnings():
+        # The duplicate `CD4` is the point of this fixture, so anndata's warning about it is noise.
+        warnings.filterwarnings("ignore", "Variable names are not unique", UserWarning)
+        table = ad.AnnData(
+            X=csr_matrix(values),
+            obs=pd.DataFrame(index=[f"cell_{i}" for i in range(n_cells)]),
+            var=pd.DataFrame({"feature_types": feature_types, "gene_ids": gene_ids}, index=names),
+        )
+    table.uns["spatialdata_attrs"] = {
+        "region": "cell_boundaries",
+        "region_key": "region",
+        "instance_key": "instance_id",
+    }
+    return table
+
+
+def test_split_feature_types_moves_antibodies_off_the_gene_axis() -> None:
+    """`var` must end up Gene-Expression-only, with the antibodies intact in `obsm`.
+
+    Pins the reason the split exists: read with `gex_only=False`, `var_names`
+    is non-unique because antibodies share gene names, which makes
+    `table[:, "CD4"]` ambiguous and would duplicate those columns through
+    `create_pseudo_spots`' `var.index.intersection(...)`.
+    """
+    import pandas as pd
+
+    from spatialrefinery.io.xenium import _split_feature_types
+
+    table = _make_protein_table()
+    assert not table.var_names.is_unique  # sanity check on the fixture itself
+    expected = np.asarray(table[:, table.var["feature_types"] == "Protein Expression"].X.todense())
+
+    out = _split_feature_types(table)
+
+    assert out.var_names.to_list() == ["ACTA2", "CD4", "VIM"]
+    assert out.var_names.is_unique
+    assert (out.var["feature_types"] == "Gene Expression").all()
+
+    proteins = out.obsm["protein_expression"]
+    assert isinstance(proteins, pd.DataFrame)  # a bare array would lose the antibody names
+    assert proteins.columns.to_list() == list(PROTEIN_NAMES)
+    assert proteins.index.equals(out.obs_names)
+    assert np.array_equal(proteins.to_numpy(), expected)
+    # float32 in, float32 out: the antibody block is n_cells x n_proteins dense, so an upcast
+    # would silently double it on disk.
+    assert proteins.to_numpy().dtype == np.float32
+
+    assert out.uns["protein_expression"] == {
+        "names": list(PROTEIN_NAMES),
+        "gene_ids": list(PROTEIN_IDS),
+        "metric": "MEAN_PER_CELL_STAIN",
+    }
+
+    # A view cannot take a new `obsm` entry and `SpatialData.write` cannot serialise one, and the
+    # table must still register as annotating `cell_boundaries`.
+    assert not out.is_view
+    assert out.uns["spatialdata_attrs"]["region"] == "cell_boundaries"
+
+
+def test_split_feature_types_adds_no_obsm_without_antibodies() -> None:
+    """A sample with no antibodies must still lose its controls, and gain no empty `obsm` entry.
+
+    Two invariants at once. The gene-axis restriction is unconditional -- the
+    reader is asked for every feature type, so a plain Xenium sample would
+    otherwise keep its control rows in `var`. The `obsm` entry is not: without
+    the emptiness guard, every such store gets a useless (n_cells, 0) frame and
+    an empty `uns` record.
+    """
+    import anndata as ad
+    import pandas as pd
+
+    from spatialrefinery.io.xenium import _split_feature_types
+
+    table = ad.AnnData(
+        X=np.arange(9, dtype=np.float32).reshape(3, 3),
+        var=pd.DataFrame(
+            {
+                "feature_types": ["Gene Expression", "Negative Control Probe", "Gene Expression"],
+                "gene_ids": ["ENSG01", "NegControlProbe_00001", "ENSG02"],
+            },
+            index=["ACTA2", "NegControlProbe_00001", "VIM"],
+        ),
+    )
+
+    out = _split_feature_types(table)
+
+    assert out.var_names.to_list() == ["ACTA2", "VIM"]
+    assert "protein_expression" not in out.obsm
+    assert "protein_expression" not in out.uns
+
+
+def test_split_feature_types_passes_through_a_table_without_feature_types() -> None:
+    """Bundles read with `gex_only=True` carry no `feature_types`; they must be left alone."""
+    import anndata as ad
+    import pandas as pd
+
+    from spatialrefinery.io.xenium import _split_feature_types
+
+    table = ad.AnnData(X=np.ones((3, 2), dtype=np.float32), var=pd.DataFrame(index=["ACTA2", "VIM"]))
+
+    assert _split_feature_types(table) is table
+
+
+def test_split_feature_types_survives_a_zarr_round_trip(tmp_path) -> None:
+    """The antibody frame must come back off disk as a named DataFrame, not a bare array.
+
+    `obsm` entries reach zarr through anndata's writer, so a pandas DataFrame is
+    only useful here if the column names survive it -- otherwise the antibodies
+    would be addressable by position alone.
+    """
+    import anndata as ad
+    import pandas as pd
+
+    from spatialrefinery.io.xenium import _split_feature_types
+
+    out = _split_feature_types(_make_protein_table())
+    out.write_zarr(tmp_path / "table.zarr")
+    back = ad.io.read_zarr(tmp_path / "table.zarr")
+
+    proteins = back.obsm["protein_expression"]
+    assert isinstance(proteins, pd.DataFrame)
+    assert proteins.columns.to_list() == list(PROTEIN_NAMES)
+    assert proteins.to_numpy().dtype == np.float32
+    written = out.obsm["protein_expression"]
+    assert isinstance(written, pd.DataFrame)
+    assert np.array_equal(proteins.to_numpy(), written.to_numpy())
+    assert back.uns["protein_expression"]["metric"] == "MEAN_PER_CELL_STAIN"
 
 
 # --------------------------------------------------------------------- #

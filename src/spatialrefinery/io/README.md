@@ -239,6 +239,7 @@ for sample_dir in raw_data_dir.iterdir():
 - ✅ Creates pseudo-spots at custom sizes (mimics Visium)
 - ✅ Determines which spots are "in tissue" based on cell boundaries
 - ✅ Validates and fixes column names for SpatialData compatibility
+- ✅ Splits protein sub-panels: antibodies to `obsm`, `var` kept to Gene Expression
 - ✅ Parallel processing support
 - ✅ Optional zip archive creation
 - ✅ Automatic cleanup of temporary files
@@ -250,23 +251,48 @@ For Xenium dataset directory structure requirements, see the [Xenium Onboard Ana
 
 ### Output Structure
 
+A multi-tissue panel (377 genes) converted with `spot_sizes=[55, 100]`:
+
 ```python
 example.zarr
 ├── Images
-│   └── 'he_image': DataTree[cyx] (3, 27502, 14896), (3, 13751, 7448), (3, 6875, 3724)
+│   ├── 'he_image': DataTree[cyx] (3, 27323, 8832), (3, 13661, 4416), (3, 6830, 2208)
+│   └── 'morphology_mip': DataTree[cyx] (1, 10346, 36943), (1, 5173, 18471), (1, 2586, 9235), ...
 ├── Labels
-│   ├── 'cell_labels': DataTree[yx] (13770, 34155), (6885, 17077), (3442, 8538), (1721, 4269), (860, 2134)
-│   └── 'nucleus_labels': DataTree[yx] (13770, 34155), (6885, 17077), (3442, 8538), (1721, 4269), (860, 2134)
+│   ├── 'cell_labels': DataTree[yx] (10346, 36943), (5173, 18471), (2586, 9235), (1293, 4617), (646, 2308)
+│   └── 'nucleus_labels': DataTree[yx] (10346, 36943), (5173, 18471), (2586, 9235), (1293, 4617), (646, 2308)
 ├── Points
-│   └── 'transcripts': DataFrame with shape: (<Delayed>, 11) (3D points)
+│   └── 'transcripts': DataFrame with shape: (5115684, 10) (3D points)
 ├── Shapes
-│   ├── 'cell_boundaries': GeoDataFrame shape: (140702, 1) (2D shapes)
-│   ├── 'cell_circles': GeoDataFrame shape: (140702, 2) (2D shapes)
-│   ├── 'nucleus_boundaries': GeoDataFrame shape: (136531, 1) (2D shapes)
-│   ├── 'spots_55um': GeoDataFrame shape: (6705, 3) (2D shapes)
-│   └── 'spots_100um': GeoDataFrame shape: (2086, 3) (2D shapes)
+│   ├── 'cell_boundaries': GeoDataFrame shape: (56510, 1) (2D shapes)
+│   ├── 'nucleus_boundaries': GeoDataFrame shape: (56510, 1) (2D shapes)
+│   ├── 'spots_55um': GeoDataFrame shape: (10502, 3) (2D shapes)
+│   ├── 'spots_100um': GeoDataFrame shape: (3366, 3) (2D shapes)
+│   └── 'tissue_contours': GeoDataFrame shape: (3501, 2) (2D shapes)
 └── Tables
-    ├── 'spots_55um_table': AnnData (6705, 377)
-    ├── 'spots_100um_table': AnnData (2086, 377)
-    └── 'table': AnnData (140702, 377)
+    ├── 'spots_55um_table': AnnData (10502, 377)
+    ├── 'spots_100um_table': AnnData (3366, 377)
+    └── 'table': AnnData (56510, 377)
 ```
+
+Sizes vary by sample: 377 is this panel's gene count, not a fixed one. What is fixed is that `var`
+holds the gene panel and nothing else -- the control and codeword feature types the cell-feature
+matrix also carries are dropped, their per-cell totals already being in `obs`.
+
+The morphology image depends on the bundle: Xenium Analyzer 2.0 and later write `morphology_focus`
+with one channel per stain, older bundles the single `morphology_mip` above.
+
+A **protein sub-panel** adds to this rather than changing its shape. Each antibody gets its own
+`morphology_focus` channel, and the per-cell measurements sit beside the gene table, addressable by
+antibody name:
+
+```python
+sdata["table"].obsm["protein_expression"]   # cells x antibodies DataFrame, columns are antibody names
+sdata["table"].uns["protein_expression"]    # {"names", "gene_ids", "metric"}
+```
+
+`var` is the gene panel either way, so nothing downstream has to branch on whether a sample carried
+antibodies. Those values are `MEAN_PER_CELL_STAIN` intensities, not counts, so they must not be
+normalised the way transcript counts are. The pseudo-spot tables carry no protein channel: proteins
+are measured per cell by antibody stain, and there is nothing in `transcripts` to aggregate onto the
+hex lattice.

@@ -39,7 +39,7 @@ dependencies = [
   "session-info2",
   "shapely",
   "spatialdata",
-  "spatialdata-io",
+  "spatialdata-io>=0.7",
   "spatialdata-plot",
   "tifffile",
 ]
