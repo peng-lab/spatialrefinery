@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning][].
   missing from the asset-kind map, so those files classified as `"unknown"`
   and `kinds=["he_alignment"]` silently skipped them. `find_xenium_files`
   already recognised both spellings.
+- `spatialrefinery.core.converter.downsample_plane`: halving a single-channel
+  `"minisblack"` plane silently swapped height and width from the second
+  sub-level onward. `cv2.resize` drops a trailing size-1 channel axis
+  (`(H, W, 1) -> (H, W)`), and the subsequent `moveaxis(img, -1, 0)` then
+  transposed that now-2D result instead of restoring the channel axis it had
+  removed. Invisible until now because the one existing `"minisblack"`
+  caller, `BioioImageConverter`, always `np.squeeze`s a single channel down
+  to plain `(H, W)` before it reaches `downsample_plane`.
 
 ### Added
 
@@ -88,3 +96,34 @@ and this project adheres to [Semantic Versioning][].
   `slide.ome.tif` yields `slide.zarr`.
 - Tutorial notebook for the segmentation pipeline, taking an OME-TIFF through
   segmentation to a written SpatialData zarr.
+- `spatialrefinery.core.converter`: read Olympus cellSens (`.vsi`),
+  PerkinElmer/Akoya QPTIFF (`.qptiff`), and Zeiss ZVI/AFI (`.zvi`, `.afi`)
+  whole-slide/microscopy images via `slideio`, joining `openslide` and
+  `bioio` as a third `ImageConverter` backend (`SlideioImageConverter`).
+  Streams level 0 the same way `OpenSlideImageConverter` does -- full-width
+  bands halved on the way past into an on-disk memmap -- via a new
+  `SlideioTiledSource`, so a whole-slide plane is never materialised in
+  full. A multichannel (non-RGB) scene is written as one page per channel,
+  which `tifffile` requires its tile iterator to fill in page-major order
+  (every tile of channel 0 before any of channel 1); `SlideioTiledSource`
+  reads and stages one channel at a time to match. `slideio` is a required
+  dependency, not an optional extra: its wheels are `numpy`-only and
+  BSD-3-Clause, matching this project's license, though it currently ships
+  none for `manylinux` aarch64 or glibc < 2.28. DICOM WSI (`.dcm`) is
+  deliberately not registered: it is normally a directory of instances,
+  which suffix-based dispatch does not address, and it has not been
+  exercised against a real file.
+
+### Changed
+
+- `spatialrefinery.core.converter.OpenSlideImageConverter` and the new
+  `SlideioImageConverter` now raise if the source reports no physical pixel
+  size (`mpp-x`/`mpp-y`, or `slideio`'s exactly-`1.0`-metre/pixel
+  no-metadata fallback), instead of silently writing the slide at an assumed
+  1.0 um/px. A slide converted at the wrong scale is exactly the "silent bad
+  sample" this project's `CLAUDE.md` says must not happen -- every
+  downstream pseudo-spot size and Phoenix training target derives from it.
+  Both converters, and `convert_to_ometiff`, take an `mpp=` override (a
+  single value, or an `(x, y)` pair, in micrometres) for a source that
+  genuinely carries none; `scripts/convert_to_ometiff.py` exposes it as
+  `--mpp`.

@@ -4715,6 +4715,29 @@ wheels = [
 ]
 
 [[package]]
+name = "slideio"
+version = "2.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/66/e7a9dcee8dac37dee5460757670e6375f58765d69d7093d356dc2b4f2683/slideio-2.9.0-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:43574ff787175e19cc9776c9edfa7b584153938eb0d7ed92d70b48747ebc9c99", size = 17284878, upload-time = "2026-08-22T16:26:46.345Z" },
+    { url = "https://files.pythonhosted.org/packages/68/70/37712de03e7a6b98da2c6641d6c13fe28664453439b19f167f3b4448c8dc/slideio-2.9.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f970991af44d67f04f7bb749532785883a25d0a940051345161b492ca2747603", size = 13665372, upload-time = "2026-08-22T16:26:49.394Z" },
+    { url = "https://files.pythonhosted.org/packages/50/53/adc876e30ccbc25b9dae2ff5d3e77653378b63f62e023476832ab452e589/slideio-2.9.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:ce2d6fd1b7ad220ce1a5defe9fec2e526b4d102a014aae65e2057c93f38dab6c", size = 28119132, upload-time = "2026-08-22T16:26:53.727Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/60/fd89084216c9878b10e7ff40386a0a0a251b1f5d9f13d25b07e4537fc631/slideio-2.9.0-cp312-cp312-win_amd64.whl", hash = "sha256:bcd0c3b13fbde81e767fef1a632382387da2e38784ed5fc99a56882014cc738b", size = 24025474, upload-time = "2026-08-22T16:26:58.217Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/e3/2c75d03975a86141a942a9db5f8b94a8d6125be6a42c0cc60c53c17d78ea/slideio-2.9.0-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:5f96dbdf3108bfb8709b554ec240719a0ed243f6aa094eb6feca65b553cbb49a", size = 17284946, upload-time = "2026-08-22T16:27:02.541Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/19/50a0ac8f3af7bc19d56d1ebc5d2d540c7977b81930048093f4086f885396/slideio-2.9.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:3bbe625650f59fdeccafcca7a40fdf5f4c57e8c05311606c07f7c46c71e11720", size = 13665469, upload-time = "2026-08-22T16:27:05.847Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/da/ad838d2fcadc60d7e7657868632421e70f31bd0d3e76d79165bb4da74071/slideio-2.9.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:11a3eb6fa27f79b338914d7a92bd84fd2eefe573aefb8af19cf0860ebf7cc9e7", size = 28119279, upload-time = "2026-08-22T16:27:10.693Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/52/29d259ffebdc4676b1afe7c59bc585c59262669834026010551c868466b2/slideio-2.9.0-cp313-cp313-win_amd64.whl", hash = "sha256:939a04273f5f454dfa5eb8310c90e04735fdfb296e42908f09c382ee0751e6a7", size = 24025496, upload-time = "2026-08-22T16:27:20.252Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/13/b22824206e869ee16d57a74da5281c3248799aa517f9c8ef47ba959838e0/slideio-2.9.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:b7999f70443e9be87ae32c0152c6b851715c92605397194d8083ada772792d24", size = 28120105, upload-time = "2026-08-22T16:27:15.64Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/96/eb9ffea5e378eb3e1dc1543a802d1fef0b262c815ac41bb9df316c1d543c/slideio-2.9.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:0840f0068d3296b967dd4201a3b58f8fa8a5e8688b56fda8ff0552b79a7e6351", size = 13666070, upload-time = "2026-08-22T16:27:23.456Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/0c/494bc9cdc551d36f795a1055815ecabd094bd40c73bc60f5c5ee4da6750f/slideio-2.9.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:41aa4684f1f8272fcad937574c6fb6c9e2fcd933146c6437044574f4b59a5513", size = 28119067, upload-time = "2026-08-22T16:27:27.94Z" },
+    { url = "https://files.pythonhosted.org/packages/55/0f/ecff5446424514e48ce18668615ba21a58a51e855d364322d4e6cf418c66/slideio-2.9.0-cp314-cp314-win_amd64.whl", hash = "sha256:ab1871e5792d48c7784281b76fc4732e03438e7dccba1101e23b19448737a311", size = 24025538, upload-time = "2026-08-22T16:27:36.67Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/24/b010ce1c1f24f1654914bc2913026869e13ed573e3f09cb01dc32263a1f1/slideio-2.9.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:661b7de9677cab9979d73680c13ce3d61b35d414b140fa8dffd4b39ee976a122", size = 28120108, upload-time = "2026-08-22T16:27:32.375Z" },
+]
+
+[[package]]
 name = "snowballstemmer"
 version = "3.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4854,6 +4877,7 @@ dependencies = [
     { name = "rich" },
     { name = "session-info2" },
     { name = "shapely" },
+    { name = "slideio" },
     { name = "spatialdata" },
     { name = "spatialdata-io" },
     { name = "spatialdata-plot" },
@@ -4922,8 +4946,9 @@ requires-dist = [
     { name = "rich" },
     { name = "session-info2" },
     { name = "shapely" },
+    { name = "slideio", specifier = ">=2.9" },
     { name = "spatialdata" },
-    { name = "spatialdata-io" },
+    { name = "spatialdata-io", specifier = ">=0.7" },
     { name = "spatialdata-plot" },
     { name = "tifffile" },
     { name = "tiffslide", marker = "extra == 'segmentation'", specifier = ">=4" },

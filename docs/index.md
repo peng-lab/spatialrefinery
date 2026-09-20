@@ -54,8 +54,8 @@ Bin transcripts or cell boundaries into Visium-like circular or hexagonal spots 
 :::
 
 :::{grid-item-card} {octicon}`image;1.5em` Pyramidal imaging
-Convert whole-slide images (`.svs`, `.ndpi`, `.tif`, `.czi`, ...) to tiled, multi-resolution OME-TIFF for fast viewing at
-any zoom level.
+Convert whole-slide images (`.svs`, `.ndpi`, `.tif`, `.czi`, `.vsi`, ...) to tiled, multi-resolution OME-TIFF for fast
+viewing at any zoom level.
 :::
 
 ::::

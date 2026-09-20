@@ -3,16 +3,18 @@
 
 Thin CLI wrapper around `spatialrefinery.core.converter.convert_to_ometiff`,
 which dispatches on file suffix to the registered converter
-(`OpenSlideImageConverter` for SVS/NDPI/TIFF/..., `AICSImageConverter` for
-CZI). This replaces the three near-identical per-format scripts that used
-to live in this directory (`czi_to_ometiff.py`, `svs_to_ometiff.py`,
-`ndpi_to_ometiff.py`) -- all of the actual conversion logic now lives in
-the package, in one place, with one (fixed) pyramid-resolution formula.
+(`OpenSlideImageConverter` for SVS/NDPI/TIFF/..., `BioioImageConverter` for
+CZI, `SlideioImageConverter` for VSI/QPTIFF/ZVI/AFI). This replaces the three
+near-identical per-format scripts that used to live in this directory
+(`czi_to_ometiff.py`, `svs_to_ometiff.py`, `ndpi_to_ometiff.py`) -- all of the
+actual conversion logic now lives in the package, in one place, with one
+(fixed) pyramid-resolution formula.
 
 Usage
 -----
     python convert_to_ometiff.py --input_path slide.svs --output_dir out/
     python convert_to_ometiff.py --input_path wsi_dir/ --output_dir out/ -p 4
+    python convert_to_ometiff.py --input_path slide.vsi --output_dir out/ --mpp 0.25
 """
 
 import argparse
@@ -53,9 +55,24 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SUBRESOLUTIONS,
         help=f"Number of pyramid subresolutions (default: {DEFAULT_SUBRESOLUTIONS})",
     )
+    parser.add_argument(
+        "--mpp",
+        type=float,
+        nargs="+",
+        metavar=("MPP_X", "MPP_Y"),
+        default=None,
+        help=(
+            "Physical pixel size in micrometres, overriding what the reader detects. One value "
+            "applies to both axes, two set X and Y separately. Required when the source carries "
+            "no usable pixel-size metadata (e.g. some VSI/SVS files)."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true", help="Regenerate outputs that already exist")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.mpp is not None and len(args.mpp) not in (1, 2):
+        parser.error("--mpp takes one value (both axes) or two (MPP_X MPP_Y)")
+    return args
 
 
 def main() -> int:
@@ -73,6 +90,10 @@ def main() -> int:
         logger.error("No convertible files found: %s (known suffixes: %s)", input_path, ", ".join(list_converters()))
         return 1
 
+    mpp: float | tuple[float, float] | None = None
+    if args.mpp is not None:
+        mpp = args.mpp[0] if len(args.mpp) == 1 else (args.mpp[0], args.mpp[1])
+
     all_outputs: list[Path] = []
     for file in files:
         try:
@@ -83,7 +104,9 @@ def main() -> int:
 
         logger.info("Processing: %s", file)
         try:
-            outputs = convert_to_ometiff(file, output_dir, subresolutions=args.pyramid_levels, overwrite=args.overwrite)
+            outputs = convert_to_ometiff(
+                file, output_dir, subresolutions=args.pyramid_levels, mpp=mpp, overwrite=args.overwrite
+            )
             all_outputs.extend(outputs)
         except Exception as e:  # noqa: BLE001 - one file's failure must not abort the whole batch
             logger.error("Failed to convert %s: %s", file, e)
