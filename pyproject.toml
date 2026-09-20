@@ -38,6 +38,7 @@ dependencies = [
   # for debug logging (referenced from the issue template)
   "session-info2",
   "shapely",
+  "slideio>=2.9",
   "spatialdata",
   "spatialdata-io>=0.7",
   "spatialdata-plot",
@@ -171,6 +172,8 @@ module = [
   "pyarrow.*",
   "scipy.*",
   "shapely.*",
+  # Binary extension module; ships no py.typed marker or .pyi stubs.
+  "slideio.*",
   "spatialdata.*",
   "spatialdata_io.*",
   "tiffslide.*",

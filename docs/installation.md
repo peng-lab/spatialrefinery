@@ -36,7 +36,10 @@ pip install "spatialrefinery[czi] @ git+https://github.com/peng-lab/spatialrefin
 ```
 
 Without the `czi` extra, {py:obj}`~spatialrefinery.convert_to_ometiff` still handles every other registered format
-(`.svs`, `.ndpi`, `.tif`, `.tiff`, `.mrxs`, `.scn`, `.bif`, `.vms`, `.svslide`) -- only `.czi` requires it.
+(`.svs`, `.ndpi`, `.tif`, `.tiff`, `.mrxs`, `.scn`, `.bif`, `.vms`, `.svslide`, `.vsi`, `.qptiff`, `.zvi`, `.afi`) --
+only `.czi` requires it. The `.vsi`/`.qptiff`/`.zvi`/`.afi` formats are read via
+[slideio](https://github.com/Booritas/slideio), a required dependency (not an extra): its wheels pull in nothing
+beyond `numpy`.
 
 ## Optional: nucleus segmentation
 
