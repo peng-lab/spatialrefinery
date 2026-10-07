@@ -32,6 +32,7 @@ xenium_example/
 /slurm/
 /slurm-logs/
 /experimental/
+.claude/
 
 # ...except the segmentation pipeline's documented entry points: the tutorial
 # notebook and the two CLI wrappers. The SLURM scripts stay untracked -- they

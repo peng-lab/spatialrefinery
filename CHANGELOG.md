@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
+- `tests/sanity_check_spatialdata.py`: standalone CLI that checks SpatialData stores (Xenium or H&E-only) for
+  the root attrs written by `core.utils.sample_attrs`, the required elements, legal transformation types,
+  `he_image`/`tissue_contours` consistency and table linkage.
 - `spatialrefinery.core`: a technology/converter registry (`registry`), shared
   spatial-omics helpers (`utils`), an image-to-pyramidal-OME-TIFF converter
   (`converter`, with an optional `czi` extra for Zeiss CZI via `bioio`), and a
