@@ -30,6 +30,7 @@ import logging
 import sys
 from pathlib import Path
 
+from spatialrefinery.core.utils import DEFAULT_SOURCE_MPP
 from spatialrefinery.segmentation.to_spatialdata import default_zarr_path, geojson_to_spatialdata
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -46,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zarr-outdir", required=True)
     parser.add_argument("--wsi-path", required=True)
     parser.add_argument("--template-adata", required=True)
+    parser.add_argument(
+        "--source-mpp",
+        type=float,
+        default=DEFAULT_SOURCE_MPP,
+        help="Pixel size (um) of the spatial-omics source image; the slide's own is read from the file",
+    )
     parser.add_argument("--no-zip", action="store_true", help="Skip the .zarr.zip archive")
     parser.add_argument("--no-skip-existing", action="store_true", help="Rebuild even if the zarr exists")
     return parser
@@ -79,6 +86,7 @@ def main() -> None:
             zarr_path=zarr_path,
             image_path=wsi_path,
             template_adata_path=template_adata,
+            source_mpp=args.source_mpp,
             write_zip=not args.no_zip,
         )
     except Exception:

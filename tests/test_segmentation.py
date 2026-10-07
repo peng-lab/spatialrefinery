@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 import tifffile as tf
 
+from spatialrefinery.core.utils import DEFAULT_SOURCE_MPP
 from spatialrefinery.segmentation.instanseg import (
     PREDICTION_TAG,
     _find_prediction_geojson,
@@ -31,12 +32,21 @@ from spatialrefinery.segmentation.to_spatialdata import (
 )
 
 
+SLIDE_MPP = 0.5
+
+
 def make_slide(path: Path, height: int = 256, width: int = 192, seed: int = 0) -> np.ndarray:
-    """Write a random RGB tiled TIFF and return its pixels."""
+    """Write a random RGB tiled TIFF with a `SLIDE_MPP` pixel size and return its pixels."""
     rng = np.random.default_rng(seed)
     image = rng.integers(0, 255, (height, width, 3), dtype=np.uint8)
     with tf.TiffWriter(path) as writer:
-        writer.write(image, tile=(64, 64), photometric="rgb")
+        writer.write(
+            image,
+            tile=(64, 64),
+            photometric="rgb",
+            resolution=(1e4 / SLIDE_MPP, 1e4 / SLIDE_MPP),
+            resolutionunit="CENTIMETER",
+        )
     return image
 
 
@@ -246,6 +256,12 @@ def test_geojson_to_spatialdata_writes_expected_elements(tmp_path):
     assert "classification" not in table.obs.columns
     assert set(table.obs["region"]) == {"nucleus_boundaries"}
     assert table.obsm["spatial"].shape == (4, 2)
+
+    assert sdata.attrs["spatialdata_io_reader"] == "he"
+    assert sdata.attrs["spatialdata_io_software_version"]
+    assert sdata.attrs["source_mpp"] == DEFAULT_SOURCE_MPP
+    assert sdata.attrs["source_he_mpp"] == pytest.approx(SLIDE_MPP)
+    assert sdata.attrs["tissue_segmentation_image"] == "he_image"
 
 
 def test_geojson_to_spatialdata_rejects_empty_geojson(tmp_path):

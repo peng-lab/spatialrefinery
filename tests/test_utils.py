@@ -17,6 +17,7 @@ from spatialrefinery.core.utils import (
     _mask_to_gdf as mask_to_gdf,
 )
 from spatialrefinery.core.utils import (
+    DEFAULT_SOURCE_MPP,
     assign_points_to_hexes,
     bin_centroids,
     bin_points_to_hex_counts,
@@ -28,6 +29,8 @@ from spatialrefinery.core.utils import (
     parse_curl_manifest,
     safe_extract_tar,
     safe_extract_zip,
+    sample_attrs,
+    slide_mpp,
     slide_stem,
     split_study_filename,
     tar_root_dir,
@@ -610,3 +613,44 @@ def test_decode_bytes_columns_no_object_columns_is_a_noop() -> None:
     )
 
     assert decode_bytes_columns(points) is points
+
+
+# --------------------------------------------------------------------- #
+# Slide pixel size and root attrs
+# --------------------------------------------------------------------- #
+
+
+def _write_tiff(path: Path, **kwargs) -> Path:
+    import tifffile
+
+    tifffile.imwrite(path, np.zeros((16, 16), dtype=np.uint8), **kwargs)
+    return path
+
+
+def test_slide_mpp_reads_resolution_tags(tmp_path: Path) -> None:
+    path = _write_tiff(tmp_path / "a.tif", resolution=(1e4 / 0.5, 1e4 / 0.5), resolutionunit="CENTIMETER")
+    assert slide_mpp(path) == pytest.approx(0.5)
+
+
+def test_slide_mpp_falls_back_to_ome_physical_size(tmp_path: Path) -> None:
+    path = _write_tiff(tmp_path / "a.ome.tif", ome=True, metadata={"PhysicalSizeX": 0.25, "PhysicalSizeY": 0.25})
+    assert slide_mpp(path) == pytest.approx(0.25)
+
+
+def test_slide_mpp_raises_without_a_pixel_size(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no usable physical pixel size"):
+        slide_mpp(_write_tiff(tmp_path / "bare.tif"))
+
+
+def test_slide_mpp_raises_on_anisotropic_pixels(tmp_path: Path) -> None:
+    path = _write_tiff(tmp_path / "a.tif", resolution=(1e4 / 0.5, 1e4 / 0.25), resolutionunit="CENTIMETER")
+    with pytest.raises(ValueError, match="anisotropic"):
+        slide_mpp(path)
+
+
+def test_sample_attrs_without_he_keeps_every_key() -> None:
+    attrs = sample_attrs("xenium", None)
+    assert set(attrs) == {"spatialdata_io_software_version", "spatialdata_io_reader", "source_mpp", "source_he_mpp"}
+    assert attrs["spatialdata_io_reader"] == "xenium"
+    assert attrs["source_mpp"] == DEFAULT_SOURCE_MPP
+    assert attrs["source_he_mpp"] is None
