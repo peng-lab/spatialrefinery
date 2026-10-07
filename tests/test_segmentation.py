@@ -31,7 +31,6 @@ from spatialrefinery.segmentation.to_spatialdata import (
     wsi_image_element,
 )
 
-
 SLIDE_MPP = 0.5
 
 

@@ -287,8 +287,8 @@ A **protein sub-panel** adds to this rather than changing its shape. Each antibo
 antibody name:
 
 ```python
-sdata["table"].obsm["protein_expression"]   # cells x antibodies DataFrame, columns are antibody names
-sdata["table"].uns["protein_expression"]    # {"names", "gene_ids", "metric"}
+sdata["table"].obsm["protein_expression"]  # cells x antibodies DataFrame, columns are antibody names
+sdata["table"].uns["protein_expression"]  # {"names", "gene_ids", "metric"}
 ```
 
 `var` is the gene panel either way, so nothing downstream has to branch on whether a sample carried

@@ -14,9 +14,6 @@ import numpy as np
 import pytest
 
 from spatialrefinery.core.utils import (
-    _mask_to_gdf as mask_to_gdf,
-)
-from spatialrefinery.core.utils import (
     DEFAULT_SOURCE_MPP,
     assign_points_to_hexes,
     bin_centroids,
@@ -35,6 +32,9 @@ from spatialrefinery.core.utils import (
     split_study_filename,
     tar_root_dir,
     transform_name,
+)
+from spatialrefinery.core.utils import (
+    _mask_to_gdf as mask_to_gdf,
 )
 
 # --------------------------------------------------------------------- #

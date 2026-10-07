@@ -80,7 +80,9 @@ XENIUM = Profile(
     optional_images=frozenset({"morphology_mip", "morphology_focus"}),
     required_labels=frozenset({"cell_labels", "nucleus_labels"}),
     required_points=frozenset({"transcripts"}),
-    required_shapes=frozenset({"cell_boundaries", "nucleus_boundaries", "spots_55um", "spots_100um", "tissue_contours"}),
+    required_shapes=frozenset(
+        {"cell_boundaries", "nucleus_boundaries", "spots_55um", "spots_100um", "tissue_contours"}
+    ),
     table_regions={
         "table": frozenset({"cell_boundaries", "nucleus_boundaries"}),
         "spots_55um_table": frozenset({"spots_55um"}),
@@ -223,7 +225,9 @@ class SpatialDataSanityChecker:
                 problems.append(f"{name} axes {axes} != ('y','x')")
 
         present_optional = sorted(p.optional_images & set(s.images))
-        detail = "; ".join(problems) if problems else f"all required present (optional images: {present_optional or 'none'})"
+        detail = (
+            "; ".join(problems) if problems else f"all required present (optional images: {present_optional or 'none'})"
+        )
         return CheckResult("elements", not problems, detail)
 
     def check_global_cs(self) -> CheckResult:
@@ -233,7 +237,9 @@ class SpatialDataSanityChecker:
         for name in self.element_kinds():
             if GLOBAL_CS not in get_transformation(self.sdata[name], get_all=True):
                 problems.append(f"{name} has no transformation to '{GLOBAL_CS}'")
-        return CheckResult("global_coordinate_system", not problems, "; ".join(problems) or "all elements map to global")
+        return CheckResult(
+            "global_coordinate_system", not problems, "; ".join(problems) or "all elements map to global"
+        )
 
     def check_transform_types(self) -> CheckResult:
         allowed = {"images": (Identity, Affine), "shapes": (Identity, Affine, Scale)}
@@ -251,7 +257,9 @@ class SpatialDataSanityChecker:
 
     def check_he_contour_consistency(self) -> CheckResult:
         if "tissue_contours" not in self.sdata.shapes or "he_image" not in self.sdata.images:
-            return CheckResult("he_vs_tissue_contours", True, "skipped (needs both he_image and tissue_contours)", info=True)
+            return CheckResult(
+                "he_vs_tissue_contours", True, "skipped (needs both he_image and tissue_contours)", info=True
+            )
         contour_components = [c for c in self.global_components("tissue_contours") if not isinstance(c, Scale)]
         he_components = self.global_components("he_image")
         contour_xy = self.xy_matrix(contour_components)
@@ -276,7 +284,9 @@ class SpatialDataSanityChecker:
             check = f"table[{name}]"
             attrs = table.uns.get("spatialdata_attrs")
             if not attrs:
-                results.append(CheckResult(check, False, "no uns['spatialdata_attrs'] (table is not linked to any element)"))
+                results.append(
+                    CheckResult(check, False, "no uns['spatialdata_attrs'] (table is not linked to any element)")
+                )
                 continue
             region, region_key, instance_key = attrs["region"], attrs["region_key"], attrs["instance_key"]
             regions = [region] if isinstance(region, str) else list(region)
@@ -302,7 +312,11 @@ class SpatialDataSanityChecker:
             if self.profile.zero_table and name == "table" and table.X is not None and table.X.max() != 0:
                 problems.append("table.X is not all zeros (expected mock template)")
 
-            results.append(CheckResult(check, not problems, "; ".join(problems) or f"-> {regions} ({table.n_obs} x {table.n_vars})"))
+            results.append(
+                CheckResult(
+                    check, not problems, "; ".join(problems) or f"-> {regions} ({table.n_obs} x {table.n_vars})"
+                )
+            )
         return results
 
 
@@ -313,7 +327,9 @@ def parse_paths(arg: str) -> list[Path]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("stores", help="Comma-separated paths to SpatialData .zarr stores.")
-    parser.add_argument("--profile", choices=["auto", *PROFILES], default="auto", help="Structure to enforce (default: auto-detect).")
+    parser.add_argument(
+        "--profile", choices=["auto", *PROFILES], default="auto", help="Structure to enforce (default: auto-detect)."
+    )
     args = parser.parse_args(argv)
 
     failed = []
