@@ -31,11 +31,13 @@ from spatialrefinery.core.converter import (
     OpenSlideTiledSource,
     SlideioImageConverter,
     SlideioTiledSource,
+    TifffileImageConverter,
+    TifffileTiledSource,
     _resolve_mpp,
     downsample_plane,
     write_ome_tiff,
 )
-from spatialrefinery.core.registry import list_converters
+from spatialrefinery.core.registry import get_converter_by_name, list_converters
 
 openslide = pytest.importorskip("openslide")
 
@@ -228,6 +230,10 @@ def test_new_formats_registered_without_disturbing_existing_ones():
     for suffix in (".svs", ".ndpi", ".tif", ".tiff", ".mrxs", ".scn", ".bif", ".vms", ".svslide"):
         assert converters[suffix] == "OpenSlideImageConverter"
 
+    # `TifffileImageConverter` claims no suffix; it is reachable by name only.
+    assert "TifffileImageConverter" not in converters.values()
+    assert get_converter_by_name("tifffile") is TifffileImageConverter
+
 
 @pytest.mark.parametrize(
     ("height", "width", "tile_size"),
@@ -383,3 +389,128 @@ def test_slideio_streamed_minisblack_pyramid_matches_per_channel_reference(
     assert [g.shape for g in got] == [w.shape for w in want]
     for index, (actual, expected) in enumerate(zip(got, want, strict=True)):
         assert np.array_equal(actual, expected), f"level {index} differs"
+
+
+# --------------------------------------------------------------------- #
+# TifffileImageConverter: flat, uncompressed, 16-bit RGB TIFFs
+# --------------------------------------------------------------------- #
+
+TIFF_MPP = 0.0913  # um/px, the scale of the skin_charite slides this converter was written for
+
+
+def make_flat_uint16_tiff(path, height, width, *, ome=False, seed=0):
+    """Write a random uint16 RGB image as one uncompressed, strip-based page.
+
+    The plain variant stores the pixel size in cm-unit TIFF resolution tags; the
+    `ome` variant only in OME-XML `PhysicalSizeX/Y`, in metres, as the vendor
+    `.ome.tif` exports do.
+    """
+    rng = np.random.default_rng(seed)
+    image = rng.integers(0, 20000, (height, width, 3), dtype=np.uint16)
+    if ome:
+        metadata = {
+            "axes": "YXS",
+            "PhysicalSizeX": TIFF_MPP * 1e-6,
+            "PhysicalSizeXUnit": "m",
+            "PhysicalSizeY": TIFF_MPP * 1e-6,
+            "PhysicalSizeYUnit": "m",
+        }
+        tf.imwrite(path, image, photometric="rgb", ome=True, metadata=metadata)
+    else:
+        tf.imwrite(
+            path,
+            image,
+            photometric="rgb",
+            rowsperstrip=1,
+            resolution=(1e4 / TIFF_MPP, 1e4 / TIFF_MPP),
+            resolutionunit="CENTIMETER",
+        )
+    return image
+
+
+def ome_physical_size_x(path):
+    """`PhysicalSizeX` of the first OME `Pixels` element, in the unit the file declares."""
+    import xml.etree.ElementTree as ET
+
+    with tf.TiffFile(path) as handle:
+        pixels = next(el for el in ET.fromstring(handle.ome_metadata).iter() if el.tag.endswith("Pixels"))
+    return float(pixels.attrib["PhysicalSizeX"])
+
+
+@pytest.mark.parametrize(("height", "width", "tile_size"), [(512, 768, 256), (700, 1100, 256), (300, 260, 128)])
+def test_tifffile_streamed_uint16_pyramid_matches_in_memory(tmp_path, height, width, tile_size):
+    """A strip-based uint16 TIFF converts losslessly at level 0, keeps its dtype, and matches in-memory halving."""
+    slide_path = tmp_path / "slide.tif"
+    image = make_flat_uint16_tiff(slide_path, height, width)
+
+    out = tmp_path / "out"
+    TifffileImageConverter(subresolutions=SUBRESOLUTIONS, tile_size=tile_size).convert(slide_path, out)
+
+    reference = tmp_path / "reference.ome.tif"
+    write_ome_tiff(
+        reference,
+        image,
+        {"PhysicalSizeX": TIFF_MPP, "PhysicalSizeY": TIFF_MPP},
+        "rgb",
+        subresolutions=SUBRESOLUTIONS,
+        tile_size=tile_size,
+    )
+
+    got = levels_of(out / "slide.ome.tif")
+    want = levels_of(reference)
+
+    assert all(level.dtype == np.uint16 for level in got)
+    assert np.array_equal(got[0], image)
+    assert [level.shape for level in got] == [level.shape for level in want]
+    for index, (actual, expected) in enumerate(zip(got, want, strict=True)):
+        assert np.array_equal(actual, expected), f"level {index} differs"
+    assert ome_physical_size_x(out / "slide.ome.tif") == pytest.approx(TIFF_MPP)
+
+
+def test_tifffile_reads_vendor_ome_tif_mpp_and_keeps_its_name(tmp_path):
+    """A vendor `.ome.tif` (pixel size in metres, OME-XML only) becomes `<stem>.ome.tif`, not `<stem>.ome.ome.tif`."""
+    slide_path = tmp_path / "in" / "slide.ome.tif"
+    slide_path.parent.mkdir()
+    image = make_flat_uint16_tiff(slide_path, 300, 400, ome=True)
+
+    outputs = TifffileImageConverter(subresolutions=1).convert(slide_path, tmp_path / "out")
+
+    assert outputs == [tmp_path / "out" / "slide.ome.tif"]
+    assert np.array_equal(levels_of(outputs[0])[0], image)
+    assert ome_physical_size_x(outputs[0]) == pytest.approx(TIFF_MPP)
+
+
+def test_converting_ome_tif_into_its_own_directory_raises(tmp_path):
+    """The output would be the input itself: skipping it as "existing" or overwriting it are both wrong."""
+    slide_path = tmp_path / "slide.ome.tif"
+    image = make_flat_uint16_tiff(slide_path, 64, 64, ome=True)
+
+    for overwrite in (False, True):
+        with pytest.raises(ValueError, match="input itself"):
+            TifffileImageConverter(subresolutions=1).convert(slide_path, tmp_path, overwrite=overwrite)
+    assert np.array_equal(tf.imread(slide_path), image)  # input untouched
+
+
+def test_tifffile_rejects_compressed_tiff(tmp_path):
+    """A page that cannot be memory-mapped must raise rather than be read whole into RAM."""
+    slide_path = tmp_path / "slide.tif"
+    make_slide(slide_path, 256, 256)  # tiled + zlib
+
+    with pytest.raises(ValueError, match="memory-mapped"):
+        TifffileTiledSource(slide_path)
+
+
+def test_tifffile_close_releases_scratch_directory(tmp_path):
+    """The staged sub-level memmaps must not outlive the source, and closing twice is a no-op."""
+    slide_path = tmp_path / "slide.tif"
+    make_flat_uint16_tiff(slide_path, 512, 768)
+
+    source = TifffileTiledSource(slide_path, subresolutions=SUBRESOLUTIONS)
+    list(source.level_data(0, 256))
+    scratch = source._scratch
+    assert scratch is not None and Path(scratch.name).exists()
+    assert source._levels[1].dtype == np.uint16
+
+    source.close()
+    assert not Path(scratch.name).exists()
+    source.close()

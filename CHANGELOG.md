@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning][].
 
 ### Fixed
 
+- `spatialrefinery.core.converter.ImageConverter.output_basename`: an `.ome.tif` source was named from `Path.stem`,
+  giving `<name>.ome.ome.tif`; it now uses `slide_stem`. `ImageConverter.convert` also raises when the output path is
+  the input itself, instead of reporting the unconverted input as an "existing output" (or overwriting it).
+- `scripts/convert_to_ometiff.py` exited 0 even when files failed to convert; it now exits 1 and lists them.
+
 - `spatialrefinery.io.xenium.xenium_to_spatialdata`: `source_mpp` was only written inside the best-effort H&E
   block, so a sample whose H&E step failed (or ran without an aligned image) had no `source_mpp` at all. The
   root attrs are now written with the base store.
@@ -30,6 +35,14 @@ and this project adheres to [Semantic Versioning][].
   to plain `(H, W)` before it reaches `downsample_plane`.
 
 ### Added
+
+- `spatialrefinery.core.converter.TifffileImageConverter` / `TifffileTiledSource`: pyramidal OME-TIFF from flat,
+  uncompressed RGB TIFFs that openslide cannot read (strip-based, or 16 bits per sample; PIL, and so
+  `openslide.ImageSlide`, decodes 16-bit RGB to the high byte only). The page is memory-mapped and streamed in bands,
+  the sample dtype is kept, and the pixel size comes from `slide_mpp`. It claims no suffix, so `.tif` still dispatches
+  to openslide; select it with `converter=` or `scripts/convert_to_ometiff.py --converter tifffile`, which also
+  accepts vendor `.ome.tif` inputs.
+- `spatialrefinery.core.registry.get_converter_by_name`: look up a registered converter by its `name`.
 
 - `tests/sanity_check_spatialdata.py`: standalone CLI that checks SpatialData stores (Xenium or H&E-only) for
   the root attrs written by `core.utils.sample_attrs`, the required elements, legal transformation types,

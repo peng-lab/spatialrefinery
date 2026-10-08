@@ -19,6 +19,7 @@ def _isolated_registry(monkeypatch):
     monkeypatch.setattr(registry, "_TECHNOLOGIES", {})
     monkeypatch.setattr(registry, "_ALIASES", {})
     monkeypatch.setattr(registry, "_CONVERTERS", {})
+    monkeypatch.setattr(registry, "_CONVERTERS_BY_NAME", {})
     # Pretend built-ins are already loaded so `_ensure_builtins` (called by
     # `get_technology`/`list_technologies`/`get_converter_for`/`list_converters`)
     # is a no-op and never imports `spatialrefinery.core.converter`/`.io`.
@@ -115,3 +116,34 @@ def test_get_converter_for_rejects_ome_tif_as_input() -> None:
         registry.get_converter_for("slide.ome.tif")
     with pytest.raises(registry.RegistryError, match="converter output"):
         registry.get_converter_for("SLIDE.OME.TIFF")
+
+
+def test_get_converter_by_name_finds_suffixless_converter() -> None:
+    """A converter claiming no suffixes is reachable only by name, and leaves suffix dispatch untouched."""
+
+    @registry.register_converter
+    class OptInConverter:
+        name = "opt-in"
+        input_suffixes = ()
+
+    assert registry.get_converter_by_name("opt_in") is OptInConverter
+    assert registry.get_converter_by_name(" Opt-In ") is OptInConverter
+    assert registry.list_converters() == {}
+    with pytest.raises(registry.RegistryError, match="Unknown converter"):
+        registry.get_converter_by_name("nope")
+
+
+def test_register_converter_duplicate_name_requires_overwrite() -> None:
+    class ConverterA:
+        name = "dup"
+
+    class ConverterB:
+        name = "dup"
+
+    registry.register_converter(ConverterA, suffixes=())
+    registry.register_converter(ConverterA, suffixes=())  # re-registering the same class is fine
+    with pytest.raises(registry.RegistryError, match="already registered"):
+        registry.register_converter(ConverterB, suffixes=())
+
+    registry.register_converter(ConverterB, suffixes=(), overwrite=True)
+    assert registry.get_converter_by_name("dup") is ConverterB

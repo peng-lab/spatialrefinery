@@ -15,6 +15,7 @@ Usage
     python convert_to_ometiff.py --input_path slide.svs --output_dir out/
     python convert_to_ometiff.py --input_path wsi_dir/ --output_dir out/ -p 4
     python convert_to_ometiff.py --input_path slide.vsi --output_dir out/ --mpp 0.25
+    python convert_to_ometiff.py --input_path tif_dir/ --output_dir out/ --converter tifffile
 """
 
 import argparse
@@ -22,7 +23,7 @@ import logging
 from pathlib import Path
 
 from spatialrefinery.core.converter import convert_to_ometiff
-from spatialrefinery.core.registry import RegistryError, get_converter_for, list_converters
+from spatialrefinery.core.registry import RegistryError, get_converter_by_name, get_converter_for, list_converters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -67,6 +68,14 @@ def parse_args() -> argparse.Namespace:
             "no usable pixel-size metadata (e.g. some VSI/SVS files)."
         ),
     )
+    parser.add_argument(
+        "--converter",
+        default=None,
+        help=(
+            "Force a converter by name (e.g. `tifffile` for flat, uncompressed or 16-bit RGB TIFFs that openslide "
+            "cannot read) instead of dispatching on file suffix. Also accepts vendor `.ome.tif` inputs."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true", help="Regenerate outputs that already exist")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
@@ -94,26 +103,45 @@ def main() -> int:
     if args.mpp is not None:
         mpp = args.mpp[0] if len(args.mpp) == 1 else (args.mpp[0], args.mpp[1])
 
-    all_outputs: list[Path] = []
-    for file in files:
+    converter = None
+    if args.converter is not None:
         try:
-            get_converter_for(file)  # fail fast with a clear message before doing any work
+            converter = get_converter_by_name(args.converter)
         except RegistryError as e:
-            logger.error("Skipping %s: %s", file, e)
-            continue
+            logger.error("%s", e)
+            return 1
+
+    all_outputs: list[Path] = []
+    failed: list[Path] = []
+    for file in files:
+        if converter is None:
+            try:
+                get_converter_for(file)  # fail fast with a clear message before doing any work
+            except RegistryError as e:
+                logger.error("Skipping %s: %s", file, e)
+                continue
 
         logger.info("Processing: %s", file)
         try:
             outputs = convert_to_ometiff(
-                file, output_dir, subresolutions=args.pyramid_levels, mpp=mpp, overwrite=args.overwrite
+                file,
+                output_dir,
+                subresolutions=args.pyramid_levels,
+                mpp=mpp,
+                overwrite=args.overwrite,
+                converter=converter,
             )
             all_outputs.extend(outputs)
         except Exception as e:  # noqa: BLE001 - one file's failure must not abort the whole batch
             logger.error("Failed to convert %s: %s", file, e)
+            failed.append(file)
 
     logger.info("Created %d OME-TIFF file(s)", len(all_outputs))
     for f in all_outputs:
         logger.info("  %s", f)
+    if failed:
+        logger.error("%d file(s) failed: %s", len(failed), ", ".join(f.name for f in failed))
+        return 1
 
     return 0
 
