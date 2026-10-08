@@ -57,6 +57,8 @@ class TechnologySpec:
 _TECHNOLOGIES: dict[str, TechnologySpec] = {}
 _ALIASES: dict[str, str] = {}
 _CONVERTERS: dict[str, type] = {}
+#: Converters by their `name` attribute, so one registered with no suffixes (opt-in only) is still reachable.
+_CONVERTERS_BY_NAME: dict[str, type] = {}
 _BUILTINS_LOADED = False
 
 
@@ -151,9 +153,21 @@ def register_converter(
 
     Usable bare (``@register_converter``, in which case ``cls.input_suffixes``
     supplies the suffixes) or parametrised (``@register_converter(suffixes=[".czi"])``).
+    A class with a ``name`` attribute is also registered under that name for
+    :func:`get_converter_by_name`, even when it claims no suffixes.
     """
 
     def _register(target: type) -> type:
+        name = getattr(target, "name", None)
+        if name is not None:
+            key = _normalise(name)
+            if key in _CONVERTERS_BY_NAME and _CONVERTERS_BY_NAME[key] is not target and not overwrite:
+                raise RegistryError(
+                    f"Converter name {name!r} is already registered to {_CONVERTERS_BY_NAME[key].__name__} "
+                    f"(pass overwrite=True to replace it)."
+                )
+            _CONVERTERS_BY_NAME[key] = target
+
         resolved = suffixes if suffixes is not None else getattr(target, "input_suffixes", ())
         for suffix in resolved:
             key = _normalise_suffix(suffix)
@@ -189,6 +203,21 @@ def get_converter_for(path: str | Path) -> type:
     except KeyError:
         known = ", ".join(sorted(_CONVERTERS)) or "<none registered>"
         raise RegistryError(f"No converter registered for suffix {suffix!r}. Known suffixes: {known}") from None
+
+
+def get_converter_by_name(name: str) -> type:
+    """Return the converter class registered under ``name`` (e.g. ``"tifffile"``).
+
+    This is the explicit counterpart to suffix dispatch: the caller has chosen
+    the reader, so the `.ome.tif` self-ingest guard in :func:`get_converter_for`
+    does not apply.
+    """
+    _ensure_builtins()
+    try:
+        return _CONVERTERS_BY_NAME[_normalise(name)]
+    except KeyError:
+        known = ", ".join(sorted(_CONVERTERS_BY_NAME)) or "<none registered>"
+        raise RegistryError(f"Unknown converter {name!r}. Known converters: {known}") from None
 
 
 def list_converters() -> dict[str, str]:

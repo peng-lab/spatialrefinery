@@ -13,7 +13,8 @@ hatches.
 Each pyramid level reaches :func:`write_ome_tiff` through a
 :class:`PyramidSource`, which supplies a level either as a whole array
 (:class:`ArrayPyramidSource`) or as an iterator of tiles
-(:class:`OpenSlideTiledSource`, :class:`SlideioTiledSource`). Whole-slide
+(:class:`OpenSlideTiledSource`, :class:`SlideioTiledSource`,
+:class:`TifffileTiledSource`). Whole-slide
 level-0 planes routinely exceed RAM -- a 100k x 45k RGB slide is 12.5 GiB
 before openslide's RGBA read buffer is counted -- so neither streaming path
 ever materialises one.
@@ -452,6 +453,106 @@ class SlideioTiledSource(PyramidSource):
         self._scene.close()
 
 
+class TifffileTiledSource(PyramidSource):
+    """Streams a flat, uncompressed RGB TIFF as tiles, mirroring `OpenSlideTiledSource`.
+
+    For single-level TIFFs neither openslide nor PIL handle correctly: strip-based
+    (openslide reads only tiled pyramids) or more than 8 bits per sample (openslide
+    hands back 8-bit RGBA, and PIL decodes 16-bit RGB to the high byte alone). The
+    page is opened with `tifffile.memmap`, so a level-0 band is a slice of a
+    read-only view onto the file and the sample dtype (e.g. `uint16`) is carried
+    through every level unchanged. Sub-levels use the same band-and-halve pass
+    as the other streaming sources, staged in memmaps of that dtype.
+
+    Only memory-mappable pages (uncompressed and stored contiguously) are
+    accepted; anything else raises rather than falling back to a whole-slide
+    read into RAM.
+    """
+
+    def __init__(self, path: Path, *, subresolutions: int = DEFAULT_SUBRESOLUTIONS) -> None:
+        import tifffile
+
+        with tifffile.TiffFile(path) as tif:
+            if len(tif.series) != 1 or len(tif.series[0].levels) != 1:
+                raise ValueError(
+                    f"{path}: expected one single-level image, found {len(tif.series)} series with "
+                    f"{[len(s.levels) for s in tif.series]} level(s); use the openslide converter for pyramids."
+                )
+            page = tif.series[0].pages[0]
+            if not page.is_memmappable:
+                raise ValueError(
+                    f"{path}: page is compressed or not stored contiguously, so it cannot be memory-mapped; "
+                    "use the openslide converter for tiled/compressed slides."
+                )
+            shape = tif.series[0].shape
+
+        if len(shape) != 3 or shape[2] != 3:
+            raise ValueError(f"{path}: expected an RGB image shaped (height, width, 3), got {shape}.")
+
+        self._image: np.memmap | None = tifffile.memmap(path, mode="r")
+        self._dtype = self._image.dtype
+        self._subresolutions = subresolutions
+        self.photometric: Photometric = "rgb"
+        self._shape0 = tuple(shape)
+        self._scratch: tempfile.TemporaryDirectory[str] | None = None
+        self._levels: dict[int, np.memmap] = {}
+        self._closed = False
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Element type of every level, taken from the TIFF's samples."""
+        return self._dtype
+
+    def level_shape(self, level: int) -> tuple[int, ...]:
+        """Halve (flooring) `level` times, matching `img_resize`'s `floor(dim * 0.5)`."""
+        height, width, samples = self._shape0
+        for _ in range(level):
+            height, width = height // 2, width // 2
+        return (height, width, samples)
+
+    def level_data(self, level: int, tile_size: int) -> Iterator[np.ndarray]:
+        """Tiles of pyramid `level`, in row-major tile order."""
+        return self._iter_tiles(level, tile_size)
+
+    def _iter_tiles(self, level: int, tile_size: int) -> Iterator[np.ndarray]:
+        height, width, _ = self.level_shape(level)
+        nxt = self._allocate(level + 1) if level < self._subresolutions else None
+        filled = 0
+
+        for y in range(0, height, tile_size):
+            rows = min(tile_size, height - y)
+            source = self._image if level == 0 else self._levels[level]
+            band = np.asarray(source[y : y + rows])
+
+            if nxt is not None:
+                small = downsample_plane(band, self.photometric, 0.5)
+                nxt[filled : filled + small.shape[0]] = small
+                filled += small.shape[0]
+
+            for x in range(0, width, tile_size):
+                yield band[:, x : x + tile_size]
+
+    def _allocate(self, level: int) -> np.memmap:
+        if self._scratch is None:
+            self._scratch = tempfile.TemporaryDirectory(prefix="spatialrefinery-pyramid-")
+        shape = self.level_shape(level)
+        memmap = np.memmap(Path(self._scratch.name) / f"level{level}.raw", dtype=self.dtype, mode="w+", shape=shape)
+        self._levels[level] = memmap  # registered up-front so it survives a partial walk
+        logger.debug("Staging pyramid level %d (shape: %s) on disk", level, shape)
+        return memmap
+
+    def close(self) -> None:
+        """Drop the staged memmaps and the source view, delete the scratch directory."""
+        if self._closed:
+            return
+        self._closed = True
+        self._levels.clear()
+        self._image = None
+        if self._scratch is not None:
+            self._scratch.cleanup()
+            self._scratch = None
+
+
 def write_ome_tiff(
     path: str | Path,
     image: np.ndarray | PyramidSource,
@@ -594,7 +695,7 @@ class ImageConverter(BaseConverter):
         self.subresolutions = subresolutions
         self.tile_size = tile_size
         # Escape hatch for a source whose reader can't determine a physical
-        # pixel size; only `OpenSlideImageConverter` and `SlideioImageConverter`
+        # pixel size; only the openslide, slideio and tifffile converters
         # consult it (`BioioImageConverter` reads pixel size straight off CZI
         # metadata), but it lives here so `convert_to_ometiff` can forward it
         # to any registered converter without special-casing which one it is.
@@ -605,13 +706,15 @@ class ImageConverter(BaseConverter):
         """Yield one `ImagePlane` per scene/series found in `source`."""
 
     def output_basename(self, source: Path, plane: ImagePlane, n_planes: int) -> str:
-        """`<stem>` for a single-plane source, `<stem>_<sanitised plane name>` otherwise."""
+        """`<stem>` for a single-plane source, `<stem>_<sanitised plane name>` otherwise.
+
+        The stem is `slide_stem`'s, so an `.ome.tif` source gives `<name>.ome.tif`, not `<name>.ome.ome.tif`.
+        """
+        from spatialrefinery.core.utils import slide_stem, transform_name
+
         if n_planes <= 1 or not plane.name:
-            return source.stem
-
-        from spatialrefinery.core.utils import transform_name
-
-        return f"{source.stem}_{transform_name(plane.name)}"
+            return slide_stem(source)
+        return f"{slide_stem(source)}_{transform_name(plane.name)}"
 
     def convert(self, source: str | Path, output_dir: str | Path, *, overwrite: bool = False) -> list[Path]:
         """Read every plane from `source` and write each as a pyramidal OME-TIFF."""
@@ -627,6 +730,10 @@ class ImageConverter(BaseConverter):
             for plane in planes:
                 out_path = output_dir / self.output_basename(source, plane, n_planes)
                 fn = _ome_tiff_path(out_path)
+                if fn.resolve() == source.resolve():
+                    # Only reachable for an `.ome.tif` source converted into its own directory: the
+                    # "existing output" below would be the unconverted input, or `overwrite` would destroy it.
+                    raise ValueError(f"{source}: output path is the input itself; choose a different output_dir.")
                 if fn.exists() and not overwrite:
                     logger.info("Skipping existing output: %s", fn)
                     outputs.append(fn)
@@ -820,6 +927,51 @@ class SlideioImageConverter(ImageConverter):
             raise
 
 
+@register_converter(overwrite=True)
+class TifffileImageConverter(ImageConverter):
+    """Reads flat, uncompressed RGB TIFFs (any sample dtype) via `tifffile`, keeping the dtype.
+
+    Claims no suffixes, so `.tif`/`.tiff` still dispatch to `OpenSlideImageConverter`;
+    it is selected explicitly (`convert_to_ometiff(..., converter=TifffileImageConverter)`,
+    or `--converter tifffile` in `scripts/convert_to_ometiff.py`). Being explicit, it
+    also accepts a vendor `.ome.tif` that the suffix registry refuses as a possible
+    converter output. Pixel size comes from `slide_mpp` (TIFF resolution tags, then
+    OME-XML `PhysicalSizeX/Y`).
+    """
+
+    name = "tifffile"
+    input_suffixes = ()
+
+    def read_planes(self, source: Path):
+        """Yield the single RGB plane, streamed via :class:`TifffileTiledSource`.
+
+        Raises if no pixel size is found and `self.mpp` was not given, or if the
+        x and y pixel sizes disagree (see `slide_mpp`).
+        """
+        from spatialrefinery.core.utils import slide_mpp
+
+        tiled = TifffileTiledSource(source, subresolutions=self.subresolutions)
+        try:
+            if self.mpp is None:
+                mpp = slide_mpp(source)
+                detected = (mpp, mpp)
+            else:
+                detected = None
+            mpp_x, mpp_y = _resolve_mpp(detected, self.mpp, source)
+        except Exception:
+            tiled.close()
+            raise
+
+        metadata = {
+            "PhysicalSizeX": mpp_x,
+            "PhysicalSizeXUnit": "µm",
+            "PhysicalSizeY": mpp_y,
+            "PhysicalSizeYUnit": "µm",
+            "Channel": {"Name": ["Red", "Green", "Blue"]},
+        }
+        yield ImagePlane(data=tiled, photometric="rgb", metadata=metadata, name=None)
+
+
 def convert_to_ometiff(
     source: str | Path,
     output_dir: str | Path,
@@ -845,8 +997,9 @@ def convert_to_ometiff(
     mpp : float | tuple[float, float] | None, optional
         Physical pixel size in micrometres, overriding whatever the reader
         detects. A single value applies to both axes. Only consulted by the
-        `openslide`- and `slideio`-backed converters, which raise if neither
-        this nor a detected pixel size is available -- see `_resolve_mpp`.
+        `openslide`-, `slideio`- and `tifffile`-backed converters, which raise
+        if neither this nor a detected pixel size is available -- see
+        `_resolve_mpp`.
     overwrite : bool, optional
         Whether to regenerate an output that already exists. Default False.
     converter : type[ImageConverter], optional
