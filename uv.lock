@@ -4882,6 +4882,7 @@ dependencies = [
     { name = "spatialdata-io" },
     { name = "spatialdata-plot" },
     { name = "tifffile" },
+    { name = "tiffslide" },
 ]
 
 [package.optional-dependencies]
@@ -4893,7 +4894,6 @@ segmentation = [
     { name = "geojson" },
     { name = "instanseg-torch" },
     { name = "rasterio" },
-    { name = "tiffslide" },
 ]
 
 [package.dev-dependencies]
@@ -4951,7 +4951,7 @@ requires-dist = [
     { name = "spatialdata-io", specifier = ">=0.7" },
     { name = "spatialdata-plot" },
     { name = "tifffile" },
-    { name = "tiffslide", marker = "extra == 'segmentation'", specifier = ">=4" },
+    { name = "tiffslide", specifier = ">=4" },
 ]
 provides-extras = ["czi", "segmentation"]
 

@@ -43,6 +43,8 @@ dependencies = [
   "spatialdata-io>=0.7",
   "spatialdata-plot",
   "tifffile",
+  # H&E pixel size for `source_he_mpp`; the segmentation extra no longer lists it.
+  "tiffslide>=4",
 ]
 optional-dependencies.czi = [ "bioio", "bioio-czi" ]
 # Nucleus segmentation on H&E whole-slide images. Kept optional: it pulls
@@ -56,7 +58,6 @@ optional-dependencies.segmentation = [
   "geojson>=3",
   "instanseg-torch>=0.1.1",
   "rasterio>=1.3",
-  "tiffslide>=4",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://spatialrefinery.readthedocs.io/"

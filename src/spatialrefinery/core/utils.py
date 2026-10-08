@@ -14,6 +14,7 @@ Two groups of functions live here, split by dependency weight:
 
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import math
 import re
@@ -21,6 +22,7 @@ import tarfile
 import zipfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse, urlunparse
 
 import numpy as np
@@ -743,6 +745,96 @@ def decode_bytes_columns(points):
     set_transformation(decoded, transformations, set_all=True)
 
     return decoded
+
+
+#: Xenium morphology-image pixel size in micrometres, used when `experiment.xenium` carries no
+#: `pixel_size` and for HE-only stores, which have no experiment spec to read it from.
+DEFAULT_SOURCE_MPP = 0.2125
+
+#: `PhysicalSizeX/Y` units an OME-XML `Pixels` element may declare, as micrometres per unit.
+_OME_UNIT_TO_UM = {"nm": 1e-3, "µm": 1.0, "um": 1.0, "mm": 1e3, "cm": 1e4, "m": 1e6}
+
+
+def slide_mpp(path: str | Path) -> float:
+    """Read a slide's level-0 pixel size in micrometres per pixel.
+
+    The TIFF resolution tags / vendor metadata are read through tiffslide first, which covers SVS,
+    NDPI and any TIFF carrying `XResolution`/`YResolution` (our own OME-TIFFs included). tiffslide
+    ignores OME-XML, so a TIFF that only declares `PhysicalSizeX/Y` there is read through tifffile.
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to a TIFF-backed slide.
+
+    Returns
+    -------
+    float
+        Micrometres per pixel, a single scalar for both axes.
+
+    Raises
+    ------
+    ValueError
+        If no positive pixel size can be found, or the x and y sizes differ by more than 1% (only
+        one scalar is stored, so anisotropy must not be silently dropped).
+    """
+    import xml.etree.ElementTree as ET
+
+    import tifffile
+    from tiffslide import TiffSlide
+
+    path = Path(path)
+    with TiffSlide(str(path)) as slide:
+        mpp_x = slide.properties.get("tiffslide.mpp-x")
+        mpp_y = slide.properties.get("tiffslide.mpp-y")
+
+    if mpp_x is None or mpp_y is None:
+        with tifffile.TiffFile(str(path)) as tif:
+            ome_xml = tif.ome_metadata
+        if ome_xml:
+            pixels = next((el for el in ET.fromstring(ome_xml).iter() if el.tag.endswith("Pixels")), None)
+            if pixels is not None and "PhysicalSizeX" in pixels.attrib and "PhysicalSizeY" in pixels.attrib:
+                # OME defaults a missing unit to micrometres.
+                attrib = pixels.attrib
+                mpp_x = float(attrib["PhysicalSizeX"]) * _OME_UNIT_TO_UM[attrib.get("PhysicalSizeXUnit", "µm")]
+                mpp_y = float(attrib["PhysicalSizeY"]) * _OME_UNIT_TO_UM[attrib.get("PhysicalSizeYUnit", "µm")]
+
+    if mpp_x is None or mpp_y is None or float(mpp_x) <= 0 or float(mpp_y) <= 0:
+        raise ValueError(f"{path}: no usable physical pixel size (MPP) found in the TIFF tags or OME-XML.")
+    if not math.isclose(float(mpp_x), float(mpp_y), rel_tol=1e-2):
+        raise ValueError(f"{path}: anisotropic pixel size (x={mpp_x}, y={mpp_y} µm/px); expected a single mpp.")
+    return float(mpp_x)
+
+
+def sample_attrs(
+    reader: Literal["xenium", "visium", "he"],
+    he_image_path: str | Path | None,
+    source_mpp: float = DEFAULT_SOURCE_MPP,
+) -> dict[str, str | float | None]:
+    """Build the root `SpatialData.attrs` every store carries, whatever produced it.
+
+    Parameters
+    ----------
+    reader : {"xenium", "visium", "he"}
+        Which converter built the store.
+    he_image_path : str | Path | None
+        The H&E slide whose pixel size becomes `source_he_mpp`; `None` when the store has no H&E
+        image, which records `source_he_mpp=None` rather than omitting the key.
+    source_mpp : float, optional
+        Pixel size in micrometres of the spatial-omics source image (the Xenium morphology image).
+        Default is `DEFAULT_SOURCE_MPP`.
+
+    Returns
+    -------
+    dict
+        `spatialdata_io_software_version`, `spatialdata_io_reader`, `source_mpp`, `source_he_mpp`.
+    """
+    return {
+        "spatialdata_io_software_version": importlib.metadata.version("spatialdata-io"),
+        "spatialdata_io_reader": reader,
+        "source_mpp": source_mpp,
+        "source_he_mpp": None if he_image_path is None else slide_mpp(he_image_path),
+    }
 
 
 def slide_to_numpy(slide, level: int = 0) -> np.ndarray:

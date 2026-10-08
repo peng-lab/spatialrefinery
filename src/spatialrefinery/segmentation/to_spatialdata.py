@@ -18,6 +18,8 @@ import zipfile
 from pathlib import Path
 from typing import cast
 
+from spatialrefinery.core.utils import DEFAULT_SOURCE_MPP
+
 logger = logging.getLogger(__name__)
 
 #: Suffixes `tifffile` can open directly. SVS and NDPI are TIFF containers, so
@@ -124,12 +126,19 @@ def geojson_to_spatialdata(
     image_path: str | Path,
     template_adata_path: str | Path,
     *,
+    source_mpp: float = DEFAULT_SOURCE_MPP,
     write_zip: bool = True,
 ):
     """Assemble and write the SpatialData zarr for one segmented slide.
 
     The table is all-zero counts over the template's `var`; it exists so the
-    shapes element carries a SpatialData-valid annotation.
+    shapes element carries a SpatialData-valid annotation. The root attrs follow
+    `spatialrefinery.core.utils.sample_attrs` with `reader="he"`, so a slide with
+    no recoverable pixel size raises before any other work is done.
+
+    `source_mpp` is the pixel size in micrometres of the spatial-omics source
+    image the store stands in for; it is not read from the slide, whose own
+    pixel size is recorded as `source_he_mpp`.
     """
     import anndata as ad
     import geopandas as gpd
@@ -138,7 +147,7 @@ def geojson_to_spatialdata(
     import spatialdata
     from spatialdata.models import ShapesModel
 
-    from spatialrefinery.core.utils import fix_table_validation_errors
+    from spatialrefinery.core.utils import fix_table_validation_errors, sample_attrs
 
     # GDAL truncates large GeoJSON features unless this is lifted.
     os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"
@@ -146,6 +155,8 @@ def geojson_to_spatialdata(
     geojson_path = Path(geojson_path)
     zarr_path = Path(zarr_path)
     image_path = Path(image_path)
+
+    attrs = sample_attrs("he", image_path, source_mpp=source_mpp)
 
     temp_geojson = geojson_path.parent / f"{geojson_path.stem}_exploded.geojson"
     if temp_geojson.exists():
@@ -191,7 +202,7 @@ def geojson_to_spatialdata(
     sdata = spatialdata.SpatialData(
         images={"he_image": wsi_image_element(image_path)},
         shapes={"nucleus_boundaries": ShapesModel.parse(shapes)},
-        attrs={"tissue_segmentation_image": "he_image"},
+        attrs={**attrs, "tissue_segmentation_image": "he_image"},
         tables={"table": table},
     )
 

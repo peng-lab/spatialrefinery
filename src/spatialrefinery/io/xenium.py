@@ -30,6 +30,7 @@ from spatialrefinery.core.converter import SpatialDataConverter
 from spatialrefinery.core.downloader import BaseDownloader, DownloadResult, RemoteAsset
 from spatialrefinery.core.registry import TechnologySpec, register_technology
 from spatialrefinery.core.utils import (
+    DEFAULT_SOURCE_MPP,
     bin_points_to_hex_counts,
     create_circular_spots,
     create_hexagonal_spots,
@@ -37,6 +38,7 @@ from spatialrefinery.core.utils import (
     fix_table_validation_errors,
     hex_lattice_params,
     parse_curl_manifest,
+    sample_attrs,
     segment_tissue,
     slide_to_numpy,
     transform_name,
@@ -682,6 +684,12 @@ def xenium_to_spatialdata(
             "table", region="cell_boundaries", instance_key="instance_id", region_key="region"
         )
 
+        # Stamped with the base store, not in the best-effort H&E block below, so every sample carries the
+        # same attrs even when the H&E step fails. An H&E with no recoverable mpp raises here, before
+        # anything is written.
+        he_path = file_paths["img_path"] if include_aligned_image else None
+        sdata.attrs.update(sample_attrs("xenium", he_path, source_mpp=specs.get("pixel_size", DEFAULT_SOURCE_MPP)))
+
         # Write the base SpatialData object to disk before spot creation to free up memory
         logger.info("Writing base data to %s...", zarr_path)
         sdata.write(zarr_path)
@@ -719,8 +727,6 @@ def xenium_to_spatialdata(
                 set_transformation(aligned_he_image, transform, to_coordinate_system="global")
                 sdata["he_image"] = aligned_he_image
                 sdata.write_element("he_image")
-
-                sdata.attrs["source_mpp"] = specs["pixel_size"]
 
                 logger.info("H&E image added successfully")
 

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning][].
 
 ### Fixed
 
+- `spatialrefinery.io.xenium.xenium_to_spatialdata`: `source_mpp` was only written inside the best-effort H&E
+  block, so a sample whose H&E step failed (or ran without an aligned image) had no `source_mpp` at all. The
+  root attrs are now written with the base store.
 - `spatialrefinery.io.xenium`: `*_he_alignment.csv` -- the name the Atera "WTA
   Preview" bundles use instead of 10x's `*_he_imagealignment.csv` -- was
   missing from the asset-kind map, so those files classified as `"unknown"`
@@ -28,6 +31,9 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
+- `tests/sanity_check_spatialdata.py`: standalone CLI that checks SpatialData stores (Xenium or H&E-only) for
+  the root attrs written by `core.utils.sample_attrs`, the required elements, legal transformation types,
+  `he_image`/`tissue_contours` consistency and table linkage.
 - `spatialrefinery.core`: a technology/converter registry (`registry`), shared
   spatial-omics helpers (`utils`), an image-to-pyramidal-OME-TIFF converter
   (`converter`, with an optional `czi` extra for Zeiss CZI via `bioio`), and a
@@ -116,6 +122,13 @@ and this project adheres to [Semantic Versioning][].
 
 ### Changed
 
+- Every store now carries the same root `attrs`: `spatialdata_io_software_version`, `spatialdata_io_reader`
+  (`xenium`, `visium` or `he`), `source_mpp` and `source_he_mpp`, built by `core.utils.sample_attrs`.
+  `source_mpp` is the Xenium `experiment.xenium` pixel size (default 0.2125 um) and `source_he_mpp` is the H&E
+  slide's own pixel size, read with the new `core.utils.slide_mpp` (tiffslide, then OME-XML), which raises when
+  none can be found. HE-only stores previously wrote the H&E pixel size as `source_mpp`; it is now
+  `source_he_mpp`. `geojson_to_spatialdata` gains `source_mpp` and the script a `--source-mpp` flag.
+- `tiffslide` moved from the `segmentation` extra to the core dependencies.
 - `spatialrefinery.core.converter.OpenSlideImageConverter` and the new
   `SlideioImageConverter` now raise if the source reports no physical pixel
   size (`mpp-x`/`mpp-y`, or `slideio`'s exactly-`1.0`-metre/pixel
