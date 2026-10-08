@@ -478,8 +478,7 @@ class TifffileTiledSource(PyramidSource):
                     f"{path}: expected one single-level image, found {len(tif.series)} series with "
                     f"{[len(s.levels) for s in tif.series]} level(s); use the openslide converter for pyramids."
                 )
-            page = tif.series[0].pages[0]
-            if not page.is_memmappable:
+            if not tif.series[0].keyframe.is_memmappable:
                 raise ValueError(
                     f"{path}: page is compressed or not stored contiguously, so it cannot be memory-mapped; "
                     "use the openslide converter for tiled/compressed slides."
@@ -489,8 +488,7 @@ class TifffileTiledSource(PyramidSource):
         if len(shape) != 3 or shape[2] != 3:
             raise ValueError(f"{path}: expected an RGB image shaped (height, width, 3), got {shape}.")
 
-        self._image: np.memmap | None = tifffile.memmap(path, mode="r")
-        self._dtype = self._image.dtype
+        self._image: np.memmap = tifffile.memmap(path, mode="r")
         self._subresolutions = subresolutions
         self.photometric: Photometric = "rgb"
         self._shape0 = tuple(shape)
@@ -501,7 +499,7 @@ class TifffileTiledSource(PyramidSource):
     @property
     def dtype(self) -> np.dtype:
         """Element type of every level, taken from the TIFF's samples."""
-        return self._dtype
+        return self._image.dtype
 
     def level_shape(self, level: int) -> tuple[int, ...]:
         """Halve (flooring) `level` times, matching `img_resize`'s `floor(dim * 0.5)`."""
@@ -542,12 +540,14 @@ class TifffileTiledSource(PyramidSource):
         return memmap
 
     def close(self) -> None:
-        """Drop the staged memmaps and the source view, delete the scratch directory."""
+        """Drop the staged memmaps and delete the scratch directory.
+
+        The read-only source view is left to be unmapped with the object, so `dtype` stays valid after closing.
+        """
         if self._closed:
             return
         self._closed = True
         self._levels.clear()
-        self._image = None
         if self._scratch is not None:
             self._scratch.cleanup()
             self._scratch = None
