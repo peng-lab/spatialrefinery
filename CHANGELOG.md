@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Added
+
+- `CLAUDE.md` describing what the repo is, why it exists and the design principles that follow from it.
+
 ### Fixed
 
 - `spatialrefinery.io.xenium.xenium_to_spatialdata`: `source_mpp` was only written inside the best-effort H&E
