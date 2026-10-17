@@ -13,7 +13,7 @@ import os
 import shutil
 import sys
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from spatialrefinery.io.xenium import xenium_to_spatialdata_zip
@@ -130,7 +130,7 @@ def main(args) -> int:
 
     if not sample_dir.is_dir():
         logger.error("Sample directory not found: %s", sample_dir)
-        append_log(args.fail_log, [datetime.now(timezone.utc).isoformat(), "", "", str(sample_dir), "not a directory"])
+        append_log(args.fail_log, [datetime.now(UTC).isoformat(), "", "", str(sample_dir), "not a directory"])
         return 1
 
     try:
@@ -150,7 +150,7 @@ def main(args) -> int:
 
     if zip_path.exists() and not args.overwrite:
         logger.info("Already converted, skipping: %s", zip_path)
-        append_log(args.done_log, [datetime.now(timezone.utc).isoformat(), panel, cohort, name, "skipped", zip_path])
+        append_log(args.done_log, [datetime.now(UTC).isoformat(), panel, cohort, name, "skipped", zip_path])
         return 0
 
     # A zarr without its zip is the debris of an interrupted run. Leaving it in
@@ -182,7 +182,7 @@ def main(args) -> int:
         logger.exception("Conversion failed for %s", sample_dir)
         append_log(
             args.fail_log,
-            [datetime.now(timezone.utc).isoformat(), panel, cohort, name, f"{type(exc).__name__}: {exc}"],
+            [datetime.now(UTC).isoformat(), panel, cohort, name, f"{type(exc).__name__}: {exc}"],
         )
         return 1
 
@@ -190,7 +190,7 @@ def main(args) -> int:
     logger.info("Created %s (%.2f GB)", produced, size_gb)
     append_log(
         args.done_log,
-        [datetime.now(timezone.utc).isoformat(), panel, cohort, name, f"{size_gb:.2f}GB", produced],
+        [datetime.now(UTC).isoformat(), panel, cohort, name, f"{size_gb:.2f}GB", produced],
     )
     return 0
 
