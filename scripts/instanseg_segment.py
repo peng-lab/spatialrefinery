@@ -3,7 +3,7 @@
 
 Thin CLI wrapper around `spatialrefinery.segmentation.instanseg.segment_wsi`.
 
-Prints `GEOJSON_PATH=<path>` on success -- the SLURM worker greps for it to
+Prints `GEOJSON_PATH=<path>` on success -- slurm_scripts/segment_wsi_array.sbatch could grep for it to
 hand the result to the conversion stage.
 
 Usage
@@ -97,7 +97,7 @@ def main() -> None:
         logger.exception("Segmentation failed for %s", wsi_path.name)
         sys.exit(1)
 
-    # Contract with slurm/segment_node_worker.sh -- keep this line last.
+    # Keep this line last: shell callers may grep for it.
     print(f"GEOJSON_PATH={geojson_path}")
 
 

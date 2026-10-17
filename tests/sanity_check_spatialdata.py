@@ -2,8 +2,8 @@
 
 Two writers feed the same downstream code and must agree on layout:
 
-* Xenium bundles (`slurm/submit_convert_panels.sh`, `spatialrefinery.io.xenium`)
-* H&E-only slides (`slurm/segment_slurm.sh`, `spatialrefinery.segmentation.to_spatialdata`)
+* Xenium bundles (`slurm_scripts/xenium_panel_array_to_zarr.sbatch`, `spatialrefinery.io.xenium`)
+* H&E-only slides (`slurm_scripts/segment_wsi_array.sbatch`, `spatialrefinery.segmentation.to_spatialdata`)
 
 For each store this script verifies
 

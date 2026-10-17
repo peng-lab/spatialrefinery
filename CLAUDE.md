@@ -57,7 +57,7 @@ These are goals, not code locations; they explain why the code looks the way it 
 - **`import spatialrefinery` stays cheap and optional extras stay optional.** Heavy dependencies (torch, openslide,
   cv2, geopandas, bioio, ...) are reached lazily; a missing extra degrades with an install hint, never a top-level
   import error.
-- **Scripts are thin.** Logic lives in the package; `scripts/` are argparse wrappers over it. `slurm/`, `experimental/`
+- **Scripts are thin.** Logic lives in the package; `scripts/` are argparse wrappers over it. `experimental/`
   and `graphify-out/` are per-checkout scratch and gitignored (`experimental/` is where new technologies are prototyped
   before landing in the package).
 

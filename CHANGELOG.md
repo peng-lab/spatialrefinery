@@ -12,10 +12,26 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
+- `slurm_scripts/` is now version-controlled (it was the gitignored `slurm/`), starting with
+  `xenium_panel_array_to_zarr.sbatch` and `scripts/xenium_panel_array_to_zarr.py`: one self-submitting script that
+  converts every Xenium bundle of a panel to a SpatialData zarr as a Slurm job array, one sample per task.
+- `slurm_scripts/segment_wsi_array.sbatch`: one self-submitting script that runs InstanSeg and the SpatialData conversion as a
+  Slurm job array, one slide and one GPU per task, replacing `segment_slurm.sh` and `segment_node_worker.sh`.
 - `CLAUDE.md` describing what the repo is, why it exists and the design principles that follow from it.
+
+### Changed
+
+- `spatialrefinery.io.xenium.xenium_to_spatialdata_zip`: the zip is written uncompressed (`ZIP_STORED`), as the
+  segmentation store's zip already was, instead of deflated by `shutil.make_archive`. Zarr chunks and parquet are
+  already compressed, so deflating only cost CPU time.
 
 ### Fixed
 
+- `scripts/xenium_to_zarr.py`: a missing biospecimen directory now exits non-zero instead of printing and
+  returning 0. A stale `.zarr` left by an interrupted run is cleared before converting. `--spot-sizes`,
+  `--overlap`, `--keep-zarr` and `--overwrite` replace the hard-coded values, `--values` is restricted to
+  `transcripts` / `cell_boundaries`, and the no-op `--render-figures` flag and the dead dask
+  `dataframe.query-planning` setting are removed.
 - `spatialrefinery.core.utils.segment_tissue`: reads the slide through tiffslide instead of OpenSlide, so
   JPEG 2000 TIFFs (compression 34712, which OpenSlide's libtiff backend rejects) no longer raise and silently
   leave a Xenium store without `tissue_contours`. It now reads only the pyramid level whose width is closest to
