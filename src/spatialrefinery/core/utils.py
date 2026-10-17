@@ -838,11 +838,11 @@ def sample_attrs(
 
 
 def slide_to_numpy(slide, level: int = 0) -> np.ndarray:
-    """Convert an `openslide.OpenSlide` object to a NumPy array.
+    """Convert an `openslide.OpenSlide` or `tiffslide.TiffSlide` object to a NumPy array.
 
     Parameters
     ----------
-    slide : openslide.OpenSlide
+    slide : openslide.OpenSlide | tiffslide.TiffSlide
         An open slide handle.
     level : int, optional
         The resolution level to read from the slide. Level 0 is the highest resolution.
@@ -912,33 +912,38 @@ def segment_tissue(
 ):
     """Compute a tissue mask for a whole-slide image.
 
+    The slide is read through tiffslide, which decodes JPEG 2000 tiles that OpenSlide's libtiff
+    backend rejects. Only the pyramid level whose width is closest to `thumbnail_width` is read, so
+    the full-resolution plane is never held in memory.
+
     Parameters
     ----------
     wsi_path : str | Path
         Path to the whole-slide image.
     pixel_size : float
-        Physical size of one pixel (e.g. microns per pixel), used to scale contours.
+        Physical size of one level-0 pixel (e.g. microns per pixel), used to scale contours.
     thumbnail_width : int, optional
-        Size at which the segmentation is performed. Default 2000.
+        Target width in pixels; segmentation runs on the pyramid level whose width is closest to
+        it. Default 2000.
     method : str, optional
         Segmentation method; only `"otsu"` is currently supported. Default `"otsu"`.
 
     Returns
     -------
     gpd.GeoDataFrame
-        Tissue contours, with a `tissue_id` column indicating which tissue
-        piece each contour belongs to.
+        Tissue contours in level-0 pixel units times `pixel_size`, with a `tissue_id` column
+        indicating which tissue piece each contour belongs to.
     """
     import cv2
-    from openslide import open_slide
+    from tiffslide import TiffSlide
 
     if method not in ("otsu",):
         raise ValueError(f"method can only be one of these: ['otsu'], found {method}")
 
-    numpy_wsi = slide_to_numpy(open_slide(str(wsi_path)))
-    height, width = numpy_wsi.shape[:2]
-    scale = thumbnail_width / width
-    thumbnail = cv2.resize(numpy_wsi, (round(width * scale), round(height * scale)), interpolation=cv2.INTER_AREA)
+    with TiffSlide(str(wsi_path)) as slide:
+        level = int(np.argmin([abs(width - thumbnail_width) for width, _ in slide.level_dimensions]))
+        downsample = slide.level_downsamples[level]
+        thumbnail = slide_to_numpy(slide, level=level)
 
     # H&E tissue is stained (darker/more saturated) against a bright white-glass
     # background, so Otsu on grayscale luminance separates the two cleanly;
@@ -950,9 +955,8 @@ def segment_tissue(
     # Close small holes/gaps left by the thresholding before extracting contours.
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
 
-    tissue_mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
-
-    return _mask_to_gdf(tissue_mask, pixel_size=pixel_size)
+    # Contours come out in the chosen level's pixels; `downsample` maps them back to level 0.
+    return _mask_to_gdf(mask, pixel_size=pixel_size * downsample)
 
 
 def create_circular_spots(
