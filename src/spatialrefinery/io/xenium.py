@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import zipfile
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -783,7 +785,7 @@ def xenium_to_spatialdata_zip(
     Convert Xenium data to SpatialData zarr and create a zip archive.
 
     This function is a wrapper around `xenium_to_spatialdata` that additionally
-    creates a zip archive of the zarr directory for easier transfer.
+    creates an uncompressed zip archive of the zarr directory for easier transfer.
 
     Parameters
     ----------
@@ -861,13 +863,14 @@ def xenium_to_spatialdata_zip(
         logger.warning("Zip file already exists: %s", zip_path)
         return zip_path
 
-    logger.info("Creating zip archive...")
-    shutil.make_archive(
-        base_name=str(zarr_path),  # Output path without .zip extension
-        format="zip",
-        root_dir=zarr_path.parent,
-        base_dir=zarr_path.name,
-    )
+    # Uncompressed: the zarr chunks and parquet files are already compressed, so deflating them
+    # (what `shutil.make_archive` does) costs CPU for almost no size gain.
+    logger.info("Creating uncompressed zip archive...")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zipf:
+        for root, _, files in os.walk(zarr_path):
+            for file in files:
+                file_path = Path(root) / file
+                zipf.write(file_path, file_path.relative_to(zarr_path.parent))
 
     logger.info("Successfully created %s", zip_path)
 

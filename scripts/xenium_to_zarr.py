@@ -1,26 +1,31 @@
+"""Convert one Xenium bundle to a zipped SpatialData zarr.
+
+For batch runs over a panel tree (Slurm arrays, completed/failed logs, mirrored output layout) use
+``scripts/xenium_panel_array_to_zarr.py`` instead.
+"""
+
 import argparse
+import logging
 import os
+import shutil
+import sys
 import warnings
 from pathlib import Path
 
-import dask
-
-# Import our custom function
 from spatialrefinery.io.xenium import xenium_to_spatialdata_zip
 
 # Set environment variable first
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-# Configure dask
-dask.config.set({"dataframe.query-planning": False})
-
 # Suppress all warnings
 warnings.filterwarnings("ignore")
+
+logger = logging.getLogger("xenium_to_zarr")
 
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--data-path",
         help="paths to data raw files",
@@ -43,39 +48,71 @@ def parse_args():
 
     parser.add_argument(
         "--values",
-        help="Values used for aggregation",
+        help="Which element to aggregate into the pseudo-spots.",
         type=str,
         default="transcripts",
+        choices=["transcripts", "cell_boundaries"],
         required=False,
     )
 
     parser.add_argument(
-        "--render-figures", help="Plot a figure using spatialdata-plot", action="store_true", default=True
+        "--spot-sizes",
+        nargs="+",
+        type=int,
+        default=[55, 100],
+        help="Pseudo-spot diameters in micrometres.",
+    )
+
+    parser.add_argument(
+        "--overlap",
+        type=float,
+        default=0.06,
+        help="Fractional overlap between adjacent hexagonal spots.",
     )
 
     parser.add_argument(
         "--num-workers",
-        help="Number of workers to use for processing images.",
+        help="Workers passed to spatialdata_io.xenium as n_jobs.",
         type=int,
         default=1,
+    )
+
+    parser.add_argument(
+        "--keep-zarr",
+        help="Keep the unzipped .zarr directory next to the zip.",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--overwrite",
+        help="Reconvert even if the output zip already exists.",
+        action="store_true",
     )
 
     return parser
 
 
-def main(args):
+def main(args) -> int:
     """Convert the specified biospecimen's Xenium output directory to a zipped SpatialData zarr store."""
     data_path = Path(args.data_path)
     output_path = Path(args.output_path)
     biospecimen_id = args.biospecimen_id
 
-    os.makedirs(output_path, exist_ok=True)
-
-    # Find paths for the single specified sample
     biospecimen_path = data_path / biospecimen_id
     if not biospecimen_path.is_dir():
-        print(f"Error: Directory not found for biospecimen ID: {biospecimen_path}")
-        return
+        logger.error("Directory not found for biospecimen ID: %s", biospecimen_path)
+        return 1
+
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # A zarr without its zip is the debris of an interrupted run. Leaving it in place would make
+    # xenium_to_spatialdata short-circuit base creation and then fail writing an already-present
+    # spots_<size>um element, so clear it first.
+    zarr_path = output_path / f"{biospecimen_id}.zarr"
+    zip_path = output_path / f"{biospecimen_id}.zarr.zip"
+    if zarr_path.exists() and (args.overwrite or not zip_path.exists()):
+        logger.warning("Removing existing zarr before conversion: %s", zarr_path)
+        shutil.rmtree(zarr_path)
 
     zip_path = xenium_to_spatialdata_zip(
         dataset_path=biospecimen_path,
@@ -83,20 +120,23 @@ def main(args):
         output_name=biospecimen_id,
         include_aligned_image=True,
         create_spots=True,
-        spot_sizes=[100, 55],
-        overlap=0.06,
+        spot_sizes=args.spot_sizes,
+        overlap=args.overlap,
         values=args.values,
         n_jobs=args.num_workers,
-        keep_zarr=True,  # Keep the zarr directory after zipping
-        overwrite=False,
+        keep_zarr=args.keep_zarr,
+        overwrite=args.overwrite,
     )
 
-    print(f"✅ Created zip file at: {zip_path}")
-    print(f"   Zip size: {Path(zip_path).stat().st_size / (1024**3):.2f} GB")
+    logger.info("Created zip file at: %s (%.2f GB)", zip_path, Path(zip_path).stat().st_size / (1024**3))
+    return 0
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
     parser = parse_args()
-    args = parser.parse_args()
-
-    main(args)
+    sys.exit(main(parser.parse_args()))

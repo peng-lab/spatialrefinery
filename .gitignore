@@ -27,9 +27,7 @@ xenium_example/
 
 # Local scratch work: new notebooks and scripts stay untracked by default
 # (already-tracked files are unaffected; use `git add -f` to version a new one)
-/scripts/convert_panel_sample.py
 /graphify-out/
-/slurm/
 /slurm-logs/
 /experimental/
 .claude/
