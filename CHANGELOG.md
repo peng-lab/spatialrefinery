@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning][].
 
 ### Fixed
 
+- `spatialrefinery.core.utils.segment_tissue`: reads the slide through tiffslide instead of OpenSlide, so
+  JPEG 2000 TIFFs (compression 34712, which OpenSlide's libtiff backend rejects) no longer raise and silently
+  leave a Xenium store without `tissue_contours`. It now reads only the pyramid level whose width is closest to
+  `thumbnail_width` and scales the contours back to level-0 pixels, instead of loading the full-resolution plane.
 - `spatialrefinery.io.xenium.xenium_to_spatialdata`: `source_mpp` was only written inside the best-effort H&E
   block, so a sample whose H&E step failed (or ran without an aligned image) had no `source_mpp` at all. The
   root attrs are now written with the base store.

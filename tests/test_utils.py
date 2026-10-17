@@ -1,9 +1,8 @@
 """Tests for `spatialrefinery.core.utils`.
 
 Only exercises the dependency-light surface (pure helpers, spot-grid
-geometry, and the mask->polygon extraction used by `segment_tissue`) so this
-file runs fast and offline; `segment_tissue` itself needs a real
-openslide-readable image on disk and is left to the end-to-end scripts.
+geometry, the mask->polygon extraction used by `segment_tissue`, and `segment_tissue`
+itself on a small synthetic pyramid) so this file runs fast and offline.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from spatialrefinery.core.utils import (
     safe_extract_tar,
     safe_extract_zip,
     sample_attrs,
+    segment_tissue,
     slide_mpp,
     slide_stem,
     split_study_filename,
@@ -498,6 +498,31 @@ def test_mask_to_gdf_empty_mask_returns_empty_geodataframe() -> None:
     mask = np.zeros((50, 50), dtype=np.uint8)
     gdf = mask_to_gdf(mask, pixel_size=1.0)
     assert len(gdf) == 0
+
+
+def test_segment_tissue_reads_nearest_level_of_a_jpeg2000_pyramid(tmp_path: Path) -> None:
+    pytest.importorskip("cv2")
+    pytest.importorskip("geopandas")
+    pytest.importorskip("tiffslide")
+    pytest.importorskip("imagecodecs")
+    import tifffile
+
+    # White glass with one dark 400x300 px "tissue" block at x in [400, 800), y in [200, 500).
+    level0 = np.full((1000, 2000, 3), 255, dtype=np.uint8)
+    level0[200:500, 400:800] = 60
+    path = tmp_path / "he.tif"
+    # Compression 34712 (JPEG 2000) is what OpenSlide's libtiff backend refuses to open.
+    with tifffile.TiffWriter(path) as tif:
+        tif.write(level0, subifds=1, tile=(128, 128), compression="jpeg2000", photometric="rgb")
+        tif.write(level0[::4, ::4], subfiletype=1, tile=(128, 128), compression="jpeg2000", photometric="rgb")
+
+    pixel_size = 0.25
+    gdf = segment_tissue(path, pixel_size=pixel_size, thumbnail_width=500)
+
+    # Contours are mapped back from the 500 px level to level-0 pixels, then scaled by pixel_size.
+    expected = (400 * pixel_size, 200 * pixel_size, 800 * pixel_size, 500 * pixel_size)
+    assert len(gdf) == 1
+    assert tuple(gdf.total_bounds) == pytest.approx(expected, abs=8 * pixel_size)
 
 
 # --------------------------------------------------------------------- #
