@@ -15,13 +15,24 @@ and verification read filenames, never contents.
 from __future__ import annotations
 
 import io
+import json
 import tarfile
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from spatialrefinery.core.registry import get_technology
-from spatialrefinery.io.visium import VisiumDownloader, classify_visium_asset, find_visium_files
+from spatialrefinery.io.visium import (
+    VisiumConverter,
+    VisiumDownloader,
+    assign_cells_to_spots,
+    classify_visium_asset,
+    find_visium_files,
+    visium_he_mpp,
+    visium_to_spatialdata,
+)
 
 STUDY = "CytAssist_11mm_FFPE_Human_Kidney"
 
@@ -54,6 +65,7 @@ def _write_tar(path: Path, names: tuple[str, ...]) -> None:
         ("_raw_feature_bc_matrix.h5", "raw_matrix"),
         ("_raw_probe_bc_matrix.h5", "raw_probe_matrix"),
         ("_molecule_info.h5", "molecule_info"),
+        ("_tissue_image.ome.tif", "tissue_image"),
         ("_tissue_image.tif", "tissue_image"),
         ("_tissue_image.btf", "tissue_image"),
         ("_image.tif", "cytassist_image"),
@@ -143,12 +155,16 @@ def test_find_visium_files_does_not_shadow_the_cytassist_image(tmp_path) -> None
     assert files["tissue_image"] == bundle / f"{STUDY}_tissue_image.tif"
 
 
-def test_find_visium_files_prefers_bigtiff_for_the_microscope_image(tmp_path) -> None:
-    """A `.btf` microscope image must not be shadowed by a `.tif` of the same sample."""
+def test_find_visium_files_prefers_ome_tif_then_tif_then_btf_for_the_microscope_image(tmp_path) -> None:
+    """A pyramidal `.ome.tif` beats the vendor `.tif`, which beats `.btf`, whatever else is in the bundle."""
     bundle = tmp_path / STUDY
     bundle.mkdir()
-    _touch(bundle, "tissue_image.btf", "tissue_image.tif")
+    _touch(bundle, "tissue_image.btf")
     assert find_visium_files(bundle)["tissue_image"] == bundle / f"{STUDY}_tissue_image.btf"
+    _touch(bundle, "tissue_image.tif")
+    assert find_visium_files(bundle)["tissue_image"] == bundle / f"{STUDY}_tissue_image.tif"
+    _touch(bundle, "tissue_image.ome.tif")
+    assert find_visium_files(bundle)["tissue_image"] == bundle / f"{STUDY}_tissue_image.ome.tif"
 
 
 def test_verify_visium_bundle_accepts_a_complete_bundle(tmp_path) -> None:
@@ -272,6 +288,353 @@ def test_visium_is_registered_as_a_technology() -> None:
     spec = get_technology("visium")
     assert spec.downloader is VisiumDownloader
     assert spec.file_finder is find_visium_files
-    # The conversion half is not built yet; a downloader-only technology is valid.
-    assert spec.converter is None
+    assert spec.converter is VisiumConverter
     assert get_technology("cytassist").name == "visium"
+
+
+# --------------------------------------------------------------------- #
+# Conversion
+# --------------------------------------------------------------------- #
+
+
+def test_assign_cells_to_spots_leaves_cells_in_the_gaps_unassigned() -> None:
+    """A cell inside a disk gets that spot's id, a cell in the gap between spots gets `<NA>`."""
+    spot_xy = np.array([[0.0, 0.0], [100.0, 0.0]])
+    cell_xy = np.array(
+        [
+            [5.0, 5.0],  # inside spot 10
+            [100.0, 20.0],  # inside spot 20, off-centre
+            [50.0, 0.0],  # the gap: 50 um from both centres, radius 27.5
+            [27.4, 0.0],  # just inside spot 10's rim
+            [27.6, 0.0],  # just outside it
+        ]
+    )
+
+    assigned = assign_cells_to_spots(cell_xy, spot_xy, np.array([10, 20]), radius=27.5)
+
+    assert str(assigned.dtype) == "Int64"  # nullable, or the NA could not live next to integer ids
+    assert assigned.tolist() == [10, 20, pd.NA, 10, pd.NA]
+
+
+def test_assign_cells_to_spots_reports_the_spot_id_not_its_row() -> None:
+    """Ids come from `spot_ids`, so a shuffled spot order cannot relabel the cells."""
+    assigned = assign_cells_to_spots(
+        np.array([[0.0, 0.0]]), np.array([[500.0, 0.0], [0.0, 0.0]]), np.array([7, 3]), radius=27.5
+    )
+    assert assigned.tolist() == [3]
+
+
+def _write_positions(path: Path, centres_px: list[tuple[float, float]], *, header: bool = True) -> Path:
+    """Write a tissue-positions file (all barcodes in tissue) for spot centres given as `(x, y)` pixels."""
+    rows = [(f"BC{i}-1", 1, i, i, y, x) for i, (x, y) in enumerate(centres_px)]
+    frame = pd.DataFrame(
+        rows, columns=["barcode", "in_tissue", "array_row", "array_col", "pxl_row_in_fullres", "pxl_col_in_fullres"]
+    )
+    frame.to_csv(path, index=False, header=header)
+    return path
+
+
+def _hex_lattice_px(pitch_px: float, n: int = 6) -> list[tuple[float, float]]:
+    """An `n` x `n` Visium-style lattice: rows `pitch * sqrt(3) / 2` apart, every other row shifted half a pitch."""
+    return [
+        ((col + 0.5 * (row % 2)) * pitch_px, row * pitch_px * np.sqrt(3) / 2) for row in range(n) for col in range(n)
+    ]
+
+
+@pytest.mark.parametrize("header", [True, False], ids=["tissue_positions.csv", "tissue_positions_list.csv"])
+def test_visium_he_mpp_is_the_lattice_pitch_over_its_pixel_spacing(tmp_path, header: bool) -> None:
+    """100 um between neighbouring spots, 400 px apart in the image, is 0.25 um/px -- in both file formats."""
+    positions = _write_positions(tmp_path / "tissue_positions.csv", _hex_lattice_px(400.0), header=header)
+    assert visium_he_mpp(positions) == pytest.approx(0.25)
+
+
+def test_visium_he_mpp_uses_off_tissue_spots_too(tmp_path) -> None:
+    """The pitch comes from the whole lattice: one in-tissue spot alone has no neighbour to measure."""
+    positions = _write_positions(tmp_path / "tissue_positions.csv", _hex_lattice_px(400.0, n=2))
+    frame = pd.read_csv(positions)
+    frame.loc[1:, "in_tissue"] = 0
+    frame.to_csv(positions, index=False)
+    assert visium_he_mpp(positions) == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("pitch_px", [20.0, 5000.0])
+def test_visium_he_mpp_rejects_an_implausible_pixel_size(tmp_path, pitch_px: float) -> None:
+    positions = _write_positions(tmp_path / "tissue_positions.csv", _hex_lattice_px(pitch_px))
+    with pytest.raises(ValueError, match="outside"):
+        visium_he_mpp(positions)
+
+
+#: Spot centres in H&E pixels (x, y), on a 400 px (= 100 um at 0.25 um/px) pitch; radius is 110 px.
+SPOT_PX = {"AAAC-1": (150, 150), "AAAG-1": (550, 150), "AAAT-1": (150, 550), "OUTS-1": (550, 550)}
+#: Space Ranger's own `spot_diameter_fullres`. On real bundles it does not follow from 55 um at the image's pixel size,
+#: so the fixture gives one that would imply 0.5 um/px and the tests pin that it is ignored.
+SPOT_DIAMETER_FULLRES = 110.0
+GENES = ["ACTA2", "CD4", "VIM"]
+
+
+def _write_10x_h5(path: Path, barcodes: list[str], counts: np.ndarray, feature_types: list[str], names: list[str]):
+    """Write the minimum 10x `filtered_feature_bc_matrix.h5` that `scanpy.read_10x_h5` accepts.
+
+    `counts` is `(n_features, n_barcodes)`; 10x stores it CSC over barcodes.
+    """
+    import h5py
+    from scipy.sparse import csc_matrix
+
+    mat = csc_matrix(counts)
+    with h5py.File(path, "w") as f:
+        grp = f.create_group("matrix")
+        grp["barcodes"] = np.array(barcodes, dtype="S")
+        grp["data"] = mat.data
+        grp["indices"] = mat.indices
+        grp["indptr"] = mat.indptr
+        grp["shape"] = np.array(mat.shape)
+        feats = grp.create_group("features")
+        feats["id"] = np.array([f"ID{i}" for i in range(len(names))], dtype="S")
+        feats["name"] = np.array(names, dtype="S")
+        feats["feature_type"] = np.array(feature_types, dtype="S")
+        feats["genome"] = np.array(["GRCh38"] * len(names), dtype="S")
+        feats["_all_tag_keys"] = np.array([], dtype="S")
+
+
+def _make_bundle(root: Path, *, counts_scale: int = 1, off_tissue_in_matrix: bool = False) -> Path:
+    """A tiny extracted CytAssist bundle: 3 in-tissue spots, 1 off-tissue, 3 genes + 1 antibody."""
+    import tifffile
+
+    bundle = root / STUDY
+    (bundle / "spatial").mkdir(parents=True)
+
+    # Dark tissue block on a white slide, so Otsu has two classes to separate.
+    he = np.full((700, 700, 3), 245, dtype=np.uint8)
+    he[50:650, 50:650] = 90
+    tifffile.imwrite(bundle / f"{STUDY}_tissue_image.tif", he, photometric="rgb")
+
+    (bundle / "spatial" / "scalefactors_json.json").write_text(
+        json.dumps(
+            {
+                "spot_diameter_fullres": SPOT_DIAMETER_FULLRES,
+                "tissue_hires_scalef": 0.1,
+                "tissue_lowres_scalef": 0.03,
+            }
+        )
+    )
+    rows = [(barcode, int(barcode != "OUTS-1"), i, i, y, x) for i, (barcode, (x, y)) in enumerate(SPOT_PX.items())]
+    pd.DataFrame(
+        rows,
+        columns=["barcode", "in_tissue", "array_row", "array_col", "pxl_row_in_fullres", "pxl_col_in_fullres"],
+    ).to_csv(bundle / "spatial" / "tissue_positions.csv", index=False)
+
+    barcodes = list(SPOT_PX)[:3]  # the filtered matrix holds in-tissue spots only
+    counts = counts_scale * np.array([[1, 2, 3], [4, 0, 6], [7, 8, 9], [5, 5, 5]])  # 3 genes + 1 antibody
+    if off_tissue_in_matrix:  # a matrix that, unlike Space Ranger's, also carries the off-tissue barcode
+        barcodes = list(SPOT_PX)
+        counts = np.c_[counts, [1, 1, 1, 1]]
+    _write_10x_h5(
+        bundle / f"{STUDY}_filtered_feature_bc_matrix.h5",
+        barcodes,
+        counts,
+        ["Gene Expression"] * 3 + ["Antibody Capture"],
+        [*GENES, "CD4"],
+    )
+    return bundle
+
+
+def _write_nuclei(path: Path) -> Path:
+    """Three nuclei in H&E pixels: inside spot AAAC, in the gap beside it, and inside spot AAAG."""
+
+    def square(cx: float, cy: float, half: float = 4.0) -> dict:
+        ring = [[cx - half, cy - half], [cx + half, cy - half], [cx + half, cy + half], [cx - half, cy + half]]
+        return {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[*ring, ring[0]]]}}
+
+    path.write_text(json.dumps([square(160, 150), square(350, 150), square(545, 155)]))
+    return path
+
+
+def _make_template(path: Path) -> Path:
+    import anndata as ad
+
+    var = pd.DataFrame({"gene_ids": ["a", "b", "c", "d", "e"]}, index=["G1", "G2", "G3", "G4", "G5"])
+    ad.AnnData(X=np.zeros((2, 5), dtype=np.float32), var=var).write_h5ad(path)
+    return path
+
+
+def test_visium_to_spatialdata_writes_one_global_pixel_frame(tmp_path) -> None:
+    """End to end on a synthetic bundle: element set, single coordinate system, tables and spot assignment."""
+    import spatialdata as sd
+    from spatialdata.transformations import Identity, get_transformation
+
+    bundle = _make_bundle(tmp_path / "raw")
+    zarr_path = visium_to_spatialdata(
+        bundle,
+        tmp_path / "out",
+        nucleus_geojson=_write_nuclei(tmp_path / "cells.geojson"),
+        template_adata_path=_make_template(tmp_path / "template.h5ad"),
+    )
+    sdata = sd.read_zarr(zarr_path)
+
+    assert sdata.coordinate_systems == ["global"]  # not the reader's three
+    assert set(sdata.images) == {"he_image"}
+    assert set(sdata.shapes) == {"spots", "tissue_contours", "nucleus_boundaries"}
+    assert set(sdata.tables) == {"spots_table", "table"}
+    assert sdata.attrs["spatialdata_io_reader"] == "visium"
+    assert sdata.attrs["source_he_mpp"] == pytest.approx(
+        0.25
+    )  # from the lattice, not the TIFF tag or the scale factors
+
+    # Spots are 55 um circles (110 px at 0.25 um/px) in H&E pixels, three of them (the off-tissue barcode is not in the matrix).
+    spots = sdata.shapes["spots"]
+    assert len(spots) == 3
+    assert spots["radius"].to_numpy() == pytest.approx(110.0)
+    assert spots.geometry.x.iloc[0] == pytest.approx(150)
+    # Everything shares the pixel grid, so nothing needs a transform to reach `global`.
+    for element in (spots, sdata["tissue_contours"], sdata["nucleus_boundaries"], sdata["he_image"]):
+        assert isinstance(get_transformation(element, "global"), Identity)
+
+    # The ground truth lives in `spots_table`: genes on `var`, the antibody beside it.
+    spots_table = sdata["spots_table"]
+    assert spots_table.var_names.to_list() == GENES
+    # The antibody is `CD4`, not the reader's `CD4-1`, so it still matches the gene of the same name.
+    assert spots_table.obsm["protein_expression"].columns.to_list() == ["CD4"]
+    assert spots_table.uns["protein_expression"]["names"] == ["CD4"]
+    assert spots_table.uns["protein_expression"]["metric"] == "UMI_COUNTS"
+    assert spots_table.uns["spatialdata_attrs"]["region"] == "spots"
+
+    # The nucleus table is all zeros over the template panel and says which spot each nucleus is in.
+    table = sdata["table"]
+    assert table.var_names.to_list() == ["G1", "G2", "G3", "G4", "G5"]
+    assert table.X.max() == 0
+    assert table.uns["spatialdata_attrs"]["region"] == "nucleus_boundaries"
+    spot_of_nucleus = table.obs["spot_id"].tolist()
+    assert spot_of_nucleus[1] is pd.NA  # the one in the gap
+    assert spot_of_nucleus[0] == spots.index[0]
+    assert spot_of_nucleus[2] == spots.index[1]
+    assert table.obsm["spatial"][0] == pytest.approx([160, 150])
+
+
+def test_visium_to_spatialdata_without_nuclei_writes_only_the_spot_side(tmp_path) -> None:
+    import spatialdata as sd
+
+    zarr_path = visium_to_spatialdata(_make_bundle(tmp_path / "raw"), tmp_path / "out")
+    sdata = sd.read_zarr(zarr_path)
+    assert set(sdata.shapes) == {"spots", "tissue_contours"}
+    assert set(sdata.tables) == {"spots_table"}
+
+
+def test_visium_to_spatialdata_refuses_an_all_zero_spot_table(tmp_path) -> None:
+    """A silent bad sample is worse than a failed run."""
+    bundle = _make_bundle(tmp_path / "raw", counts_scale=0)
+    with pytest.raises(ValueError, match="all zeros"):
+        visium_to_spatialdata(bundle, tmp_path / "out")
+    assert not (tmp_path / "out" / f"{STUDY}.zarr").exists()
+
+
+def test_visium_to_spatialdata_rejects_nuclei_on_the_wrong_pixel_grid(tmp_path) -> None:
+    """Nuclei segmented at a different mpp land far from every spot; that must raise, not write an empty join."""
+    far = tmp_path / "far.geojson"
+    far.write_text(
+        json.dumps(
+            [
+                {
+                    "type": "Feature",
+                    "properties": {},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[5000, 5000], [5008, 5000], [5008, 5008], [5000, 5000]]],
+                    },
+                }
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match="falls inside any spot"):
+        visium_to_spatialdata(
+            _make_bundle(tmp_path / "raw"),
+            tmp_path / "out",
+            nucleus_geojson=far,
+            template_adata_path=_make_template(tmp_path / "template.h5ad"),
+        )
+
+
+def test_visium_to_spatialdata_names_the_missing_spatial_archive(tmp_path) -> None:
+    bundle = _make_bundle(tmp_path / "raw")
+    (bundle / "spatial" / "scalefactors_json.json").unlink()
+    with pytest.raises(FileNotFoundError, match="scalefactors"):
+        visium_to_spatialdata(bundle, tmp_path / "out")
+
+
+def test_visium_converter_supports_an_extracted_bundle_only(tmp_path) -> None:
+    bundle = _make_bundle(tmp_path / "raw")
+    assert VisiumConverter.supports(bundle)
+    assert not VisiumConverter.supports(tmp_path)
+
+
+def test_visium_to_spatialdata_needs_a_template_for_nuclei(tmp_path) -> None:
+    with pytest.raises(ValueError, match="template_adata_path"):
+        visium_to_spatialdata(
+            _make_bundle(tmp_path / "raw"),
+            tmp_path / "out",
+            nucleus_geojson=_write_nuclei(tmp_path / "cells.geojson"),
+            template_adata_path=None,
+        )
+
+
+def test_visium_to_spatialdata_rejects_a_single_level_slide_too_wide_to_segment(tmp_path) -> None:
+    """A raw 10x image has no coarse level, so `segment_tissue` would contour the full plane and never finish.
+
+    The error has to name the conversion, with the scale-factor pixel size rather than the bogus TIFF tag.
+    """
+    import tifffile
+
+    bundle = _make_bundle(tmp_path / "raw")
+    wide = np.full((64, 9000, 3), 245, dtype=np.uint8)  # one level, wider than MAX_SEGMENTATION_WIDTH
+    tifffile.imwrite(bundle / f"{STUDY}_tissue_image.tif", wide, photometric="rgb")
+
+    with pytest.raises(ValueError, match=r"convert_to_ometiff\.py.*--mpp 0\.2500"):
+        visium_to_spatialdata(bundle, tmp_path / "out")
+    assert not (tmp_path / "out" / f"{STUDY}.zarr").exists()
+
+
+def test_visium_to_spatialdata_rejects_spots_outside_the_image(tmp_path) -> None:
+    """In-tissue spots beyond the image mean the positions are on another pixel grid; that must not be written."""
+    import tifffile
+
+    bundle = _make_bundle(tmp_path / "raw")
+    small = np.full((300, 300, 3), 245, dtype=np.uint8)  # the spots reach x=550, y=550
+    tifffile.imwrite(bundle / f"{STUDY}_tissue_image.tif", small, photometric="rgb")
+
+    with pytest.raises(ValueError, match="not on this image's pixel grid"):
+        visium_to_spatialdata(bundle, tmp_path / "out")
+    assert not (tmp_path / "out" / f"{STUDY}.zarr").exists()
+
+
+def test_visium_to_spatialdata_keeps_a_few_spots_outside_the_image(tmp_path, monkeypatch, caplog) -> None:
+    """A small share of in-tissue spots past the image edge is kept, with a warning; a large share still raises."""
+    import spatialdata as sd
+    import tifffile
+
+    from spatialrefinery.io import visium
+
+    bundle = _make_bundle(tmp_path / "raw")
+    narrow = np.full((700, 400, 3), 245, dtype=np.uint8)  # spot AAAG sits at x=550, beyond 400 + one 110 px radius
+    narrow[50:650, 50:350] = 90
+    tifffile.imwrite(bundle / f"{STUDY}_tissue_image.tif", narrow, photometric="rgb")
+
+    with pytest.raises(ValueError, match="1 of 3 in-tissue spots"):  # 33% outside, over the default tolerance
+        visium_to_spatialdata(bundle, tmp_path / "strict")
+
+    monkeypatch.setattr(visium, "MAX_SPOTS_OUTSIDE_IMAGE", 0.5)
+    zarr_path = visium_to_spatialdata(bundle, tmp_path / "relaxed")
+
+    assert "1 of 3 in-tissue spots lie more than one spot radius outside" in caplog.text
+    assert len(sd.read_zarr(zarr_path)["spots"]) == 3  # the stray spot is kept, not dropped
+
+
+def test_visium_to_spatialdata_keeps_only_in_tissue_spots(tmp_path) -> None:
+    """A matrix that carries an in_tissue == 0 barcode must not put that spot in the store."""
+    import spatialdata as sd
+
+    bundle = _make_bundle(tmp_path / "raw", off_tissue_in_matrix=True)
+    sdata = sd.read_zarr(visium_to_spatialdata(bundle, tmp_path / "out"))
+
+    assert len(sdata["spots"]) == 3
+    assert sdata["spots_table"].n_obs == 3
+    assert (sdata["spots_table"].obs["in_tissue"] == 1).all()
+    assert "OUTS-1" not in sdata["spots_table"].obs_names

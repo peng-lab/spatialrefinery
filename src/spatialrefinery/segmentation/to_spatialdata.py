@@ -22,9 +22,9 @@ from spatialrefinery.core.utils import DEFAULT_SOURCE_MPP
 
 logger = logging.getLogger(__name__)
 
-#: Suffixes `tifffile` can open directly. SVS and NDPI are TIFF containers, so
-#: the whole family goes through the same lazy path.
-_TIFF_SUFFIXES = (".tif", ".tiff", ".svs", ".ndpi", ".scn", ".bif", ".svslide")
+#: Suffixes `tifffile` can open directly. SVS and NDPI are TIFF containers, and `.btf` is BigTIFF
+#: (10x ships some CytAssist tissue images that way), so the whole family goes through the same lazy path.
+_TIFF_SUFFIXES = (".tif", ".tiff", ".btf", ".svs", ".ndpi", ".scn", ".bif", ".svslide")
 
 DEFAULT_SCALE_FACTORS = (2, 2, 2, 2)
 
@@ -120,6 +120,43 @@ def default_zarr_path(wsi_path: str | Path, zarr_outdir: str | Path) -> Path:
     return Path(zarr_outdir) / f"{slide_stem(wsi_path)}.zarr"
 
 
+def read_nucleus_geojson(geojson_path: str | Path):
+    """Read an InstanSeg `cells.geojson` into a `GeoDataFrame` of single polygons in slide pixels.
+
+    Multi-polygons are exploded through an intermediate `<stem>_exploded.geojson` next to the input, which is
+    reused when present; deleting it afterwards is the caller's job.
+    The frame's index is cast to `str`, and its CRS dropped: the GeoJSON spec declares EPSG:4326, so pyogrio
+    tags the frame as geographic -- but these are pixel coordinates on a slide, not lon/lat. Left in place,
+    `.centroid` warns and invites a spherical reprojection that would silently corrupt every centroid.
+
+    Raises
+    ------
+    ValueError
+        If the file holds no polygons.
+    """
+    import geopandas as gpd
+
+    # GDAL truncates large GeoJSON features unless this is lifted.
+    os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"
+
+    geojson_path = Path(geojson_path)
+    exploded_path = geojson_path.parent / f"{geojson_path.stem}_exploded.geojson"
+    if exploded_path.exists():
+        logger.info("Reusing existing exploded GeoJSON: %s", exploded_path)
+    else:
+        logger.info("Exploding multi-polygons from %s", geojson_path)
+        explode_multipolygons(geojson_path, save_path=exploded_path)
+
+    logger.info("Reading exploded GeoJSON")
+    gdf = gpd.read_file(exploded_path)
+    if gdf.empty:
+        raise ValueError(f"No polygons found in {geojson_path}")
+
+    gdf = gdf.set_crs(None, allow_override=True)
+    gdf.index = gdf.index.astype(str)
+    return gdf
+
+
 def geojson_to_spatialdata(
     geojson_path: str | Path,
     zarr_path: str | Path,
@@ -141,7 +178,6 @@ def geojson_to_spatialdata(
     pixel size is recorded as `source_he_mpp`.
     """
     import anndata as ad
-    import geopandas as gpd
     import numpy as np
     import pandas as pd
     import spatialdata
@@ -149,36 +185,16 @@ def geojson_to_spatialdata(
 
     from spatialrefinery.core.utils import fix_table_validation_errors, sample_attrs
 
-    # GDAL truncates large GeoJSON features unless this is lifted.
-    os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"
-
     geojson_path = Path(geojson_path)
     zarr_path = Path(zarr_path)
     image_path = Path(image_path)
 
     attrs = sample_attrs("he", image_path, source_mpp=source_mpp)
 
-    temp_geojson = geojson_path.parent / f"{geojson_path.stem}_exploded.geojson"
-    if temp_geojson.exists():
-        logger.info("Reusing existing exploded GeoJSON: %s", temp_geojson)
-    else:
-        logger.info("Exploding multi-polygons from %s", geojson_path)
-        explode_multipolygons(geojson_path, save_path=temp_geojson)
-
-    logger.info("Reading exploded GeoJSON")
-    gdf = gpd.read_file(temp_geojson)
-    if gdf.empty:
-        raise ValueError(f"No polygons found in {geojson_path}")
-
-    # The GeoJSON spec declares EPSG:4326, so pyogrio tags the frame as
-    # geographic -- but these are pixel coordinates on a slide, not lon/lat.
-    # Left in place, `.centroid` warns and invites a spherical reprojection
-    # that would silently corrupt every centroid.
-    gdf = gdf.set_crs(None, allow_override=True)
+    gdf = read_nucleus_geojson(geojson_path)
 
     centroids = gdf.geometry.centroid
     spatial_coords = np.column_stack([centroids.x, centroids.y])
-    gdf.index = gdf.index.astype(str)
 
     logger.info("Loading template AnnData: %s", template_adata_path)
     template_adata = ad.read_h5ad(template_adata_path)
@@ -228,5 +244,5 @@ def geojson_to_spatialdata(
                         file_path = Path(root) / file
                         zipf.write(file_path, file_path.relative_to(zarr_path.parent))
 
-    temp_geojson.unlink(missing_ok=True)
+    geojson_path.with_name(f"{geojson_path.stem}_exploded.geojson").unlink(missing_ok=True)
     return sdata

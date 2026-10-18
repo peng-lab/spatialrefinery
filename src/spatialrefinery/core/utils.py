@@ -22,11 +22,14 @@ import tarfile
 import zipfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse, urlunparse
 
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    from anndata import AnnData
 
 logger = logging.getLogger(__name__)
 
@@ -691,6 +694,83 @@ def fix_table_validation_errors(adata):
     return adata
 
 
+def split_feature_types(table: AnnData, *, protein_type: str, metric: str) -> AnnData:
+    """Put a table on a Gene Expression `var` axis, keeping any antibodies in `obsm`.
+
+    Shared by the Xenium cell table and the Visium spot table. A Xenium cell-feature matrix mixes feature types: the targeted gene panel, several control and
+    codeword classes, and -- on a protein sub-panel -- one `Protein Expression` row per antibody. How
+    many of each varies by panel, so nothing here is keyed to a particular count.
+
+    **The gene-axis restriction is unconditional**, protein sub-panel or not.
+    :func:`xenium_to_spatialdata` reads with `gex_only=False`, so without this every bundle would keep
+    its control and codeword rows in `var` -- a regression against the `gex_only=True` axis those
+    bundles used to get. Only the `obsm` half is conditional, and only on antibodies being present.
+
+    `gex_only=False` is what makes the antibodies reachable at all: as of spatialdata-io 0.7 the
+    reader's `protein_scaling_factor` correction runs *after* the `gex_only` mask, so `gex_only=True`
+    drops those columns before they can be de-scaled.
+
+    They cannot simply stay in `var`, though. An antibody and a gene against the same target share a
+    name -- `CD4` is both a gene and an antibody in the multi-tissue protein sub-panel -- so
+    `var_names` goes non-unique: `table[:, "CD4"]` turns ambiguous, and :func:`create_pseudo_spots`'
+    `var.index.intersection(...)` would emit every such gene twice into the spot table. The values are
+    not counts either -- the bundle's h5 records `protein_metric = MEAN_PER_CELL_STAIN` -- while
+    `obs["total_counts"]` covers transcripts only, so a mixed table makes `X.sum(axis=1)` meaningless.
+
+    The control and codeword feature types are dropped rather than moved: `obs` already carries their
+    per-cell totals (`control_probe_counts`, `genomic_control_counts`, `control_codeword_counts`,
+    `unassigned_codeword_counts`, `deprecated_codeword_counts`).
+
+    Parameters
+    ----------
+    table : anndata.AnnData
+        The table as `spatialdata_io.xenium` / `spatialdata_io.visium` returns it, read so that every
+        feature type was kept.
+    protein_type : str
+        The `var["feature_types"]` value that marks an antibody row: `"Protein Expression"` for Xenium,
+        `"Antibody Capture"` for Visium.
+    metric : str
+        What the antibody values measure, recorded in `uns["protein_expression"]["metric"]`:
+        `"MEAN_PER_CELL_STAIN"` for Xenium, `"UMI_COUNTS"` for Visium.
+
+    Returns
+    -------
+    anndata.AnnData
+        A new table whose `var` holds only `Gene Expression` features. When the panel carried
+        antibodies, `obsm["protein_expression"]` is an `n_cells x n_proteins` DataFrame indexed by
+        `obs_names` and columned by antibody name, and `uns["protein_expression"]` records their
+        `names`, `gene_ids` and `metric`. Returned unchanged when `var` has no `feature_types` column,
+        which is how older bundles (and any matrix read with `gex_only=True`) come back.
+    """
+    if "feature_types" not in table.var.columns:
+        return table
+
+    feature_types = table.var["feature_types"]
+    protein_mask = (feature_types == protein_type).to_numpy()
+    # `to_df()` densifies and carries `obs_names` as the index and `var_names` as the columns, so the
+    # antibody names ride along without being rebuilt by hand.
+    proteins = table[:, protein_mask].to_df()
+    gene_ids = table.var["gene_ids"].to_numpy()[protein_mask].tolist()
+
+    # `.copy()`, not the view: an AnnData view rejects new `obsm` entries and `SpatialData.write`
+    # cannot serialise one. The copy also carries `uns["spatialdata_attrs"]` across, so the element
+    # stays a parsed TableModel and the caller's `set_table_annotates_spatialelement` still applies.
+    table = table[:, (feature_types == "Gene Expression").to_numpy()].copy()
+
+    # Without this guard a panel with no antibodies gets an empty (n_cells, 0) frame written to disk.
+    if protein_mask.any():
+        table.obsm["protein_expression"] = proteins
+        table.uns["protein_expression"] = {
+            "names": proteins.columns.to_list(),
+            "gene_ids": gene_ids,
+            "metric": metric,
+        }
+        logger.info("Moved %d %s features to obsm['protein_expression']", int(protein_mask.sum()), protein_type)
+
+    logger.info("Restricted the table to %d Gene Expression features", table.n_vars)
+    return table
+
+
 def decode_bytes_columns(points):
     """Decode bytes-valued ``object`` columns of a points frame to pandas strings.
 
@@ -810,6 +890,7 @@ def sample_attrs(
     reader: Literal["xenium", "visium", "he"],
     he_image_path: str | Path | None,
     source_mpp: float = DEFAULT_SOURCE_MPP,
+    he_mpp: float | None = None,
 ) -> dict[str, str | float | None]:
     """Build the root `SpatialData.attrs` every store carries, whatever produced it.
 
@@ -823,6 +904,10 @@ def sample_attrs(
     source_mpp : float, optional
         Pixel size in micrometres of the spatial-omics source image (the Xenium morphology image).
         Default is `DEFAULT_SOURCE_MPP`.
+    he_mpp : float | None, optional
+        The H&E pixel size in micrometres, recorded as `source_he_mpp` instead of reading it from
+        `he_image_path`. Needed for Visium, whose tissue images carry a 96-dpi default resolution tag
+        (264.58 um/px) rather than their real pixel size. Default is `None`: read it from the slide.
 
     Returns
     -------
@@ -833,7 +918,9 @@ def sample_attrs(
         "spatialdata_io_software_version": importlib.metadata.version("spatialdata-io"),
         "spatialdata_io_reader": reader,
         "source_mpp": source_mpp,
-        "source_he_mpp": None if he_image_path is None else slide_mpp(he_image_path),
+        "source_he_mpp": he_mpp
+        if he_mpp is not None
+        else (None if he_image_path is None else slide_mpp(he_image_path)),
     }
 
 

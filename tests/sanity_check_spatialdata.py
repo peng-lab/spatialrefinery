@@ -61,7 +61,11 @@ class Profile:
     optional_images
         Image names that may exist (they are still subject to the image rules).
     zero_table
-        Whether the main `table` must be an all-zero mock template (H&E-only).
+        Whether the main `table` must be an all-zero mock template (H&E-only, Visium).
+    only_global
+        Whether `global` must be the store's only coordinate system (Visium: the reader's own are dropped).
+    spot_assignment
+        Whether `table.obs["spot_id"]` must hold ids of the `spots` shapes (or be missing) -- Visium only.
     """
 
     name: str
@@ -72,6 +76,8 @@ class Profile:
     table_regions: dict[str, frozenset[str]]
     optional_images: frozenset[str] = frozenset()
     zero_table: bool = False
+    only_global: bool = False
+    spot_assignment: bool = False
 
 
 XENIUM = Profile(
@@ -100,7 +106,19 @@ HE_ONLY = Profile(
     zero_table=True,
 )
 
-PROFILES = {"xenium": XENIUM, "he": HE_ONLY}
+VISIUM = Profile(
+    name="visium",
+    required_images=frozenset({"he_image"}),
+    required_labels=frozenset(),
+    required_points=frozenset(),
+    required_shapes=frozenset({"spots", "nucleus_boundaries", "tissue_contours"}),
+    table_regions={"spots_table": frozenset({"spots"}), "table": frozenset({"nucleus_boundaries"})},
+    zero_table=True,
+    only_global=True,
+    spot_assignment=True,
+)
+
+PROFILES = {"xenium": XENIUM, "he": HE_ONLY, "visium": VISIUM}
 
 
 @dataclass
@@ -132,7 +150,9 @@ class SpatialDataSanityChecker:
 
     @staticmethod
     def detect_profile(sdata: sd.SpatialData) -> Profile:
-        """Xenium if the reader attribute or a `transcripts` points element is present."""
+        """Xenium if the reader attribute or a `transcripts` points element is present; Visium by its reader."""
+        if sdata.attrs.get("spatialdata_io_reader") == "visium":
+            return VISIUM
         is_xenium = sdata.attrs.get("spatialdata_io_reader") == "xenium" or "transcripts" in sdata.points
         return XENIUM if is_xenium else HE_ONLY
 
@@ -234,6 +254,8 @@ class SpatialDataSanityChecker:
         problems = []
         if GLOBAL_CS not in self.sdata.coordinate_systems:
             problems.append(f"'{GLOBAL_CS}' not in coordinate systems {self.sdata.coordinate_systems}")
+        elif self.profile.only_global and self.sdata.coordinate_systems != [GLOBAL_CS]:
+            problems.append(f"coordinate systems {self.sdata.coordinate_systems} != ['{GLOBAL_CS}']")
         for name in self.element_kinds():
             if GLOBAL_CS not in get_transformation(self.sdata[name], get_all=True):
                 problems.append(f"{name} has no transformation to '{GLOBAL_CS}'")
@@ -311,6 +333,15 @@ class SpatialDataSanityChecker:
                     problems.append(f"obs['{instance_key}'] does not match '{regions[0]}' index")
             if self.profile.zero_table and name == "table" and table.X is not None and table.X.max() != 0:
                 problems.append("table.X is not all zeros (expected mock template)")
+            if (
+                self.profile.spot_assignment
+                and name == "table"
+                and "spot_id" in table.obs
+                and "spots" in self.sdata.shapes
+            ):
+                unknown = set(table.obs["spot_id"].dropna()) - set(self.sdata.shapes["spots"].index)
+                if unknown:
+                    problems.append(f"obs['spot_id'] holds {len(unknown)} ids that are not in the 'spots' index")
 
             results.append(
                 CheckResult(

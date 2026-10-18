@@ -27,7 +27,7 @@ failures and write atomically, and unpack their technology's archives in place -
 ## Converting
 
 Convert raw vendor bundles and whole-slide images into analysis-ready formats: a
-[SpatialData](https://spatialdata.scverse.org/en/stable/) zarr store for Xenium, and pyramidal OME-TIFF for microscopy images.
+[SpatialData](https://spatialdata.scverse.org/en/stable/) zarr store for Xenium and Visium, and pyramidal OME-TIFF for microscopy images.
 
 ```{eval-rst}
 .. currentmodule:: spatialrefinery
@@ -38,6 +38,8 @@ Convert raw vendor bundles and whole-slide images into analysis-ready formats: a
 
     xenium_to_spatialdata
     xenium_to_spatialdata_zip
+    visium_to_spatialdata
+    visium_to_spatialdata_zip
     convert_to_ometiff
 ```
 

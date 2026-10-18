@@ -655,7 +655,7 @@ class OpenSlideImageConverter(ImageConverter):
     """Reads whole-slide images via `openslide` (SVS, NDPI, and other Aperio/Hamamatsu formats)."""
 
     name = "openslide"
-    input_suffixes = (".svs", ".ndpi", ".tif", ".tiff", ".mrxs", ".scn", ".bif", ".vms", ".svslide")
+    input_suffixes = (".svs", ".ndpi", ".tif", ".tiff", ".btf", ".mrxs", ".scn", ".bif", ".vms", ".svslide")
 
     def __init__(self, *, level: int = 0, **kwargs: Any) -> None:
         super().__init__(**kwargs)

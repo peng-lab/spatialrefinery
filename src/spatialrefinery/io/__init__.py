@@ -6,10 +6,15 @@ spatial transcriptomics data formats to SpatialData zarr format.
 """
 
 from .visium import (
+    VisiumConverter,
     VisiumDownloader,
+    assign_cells_to_spots,
     classify_visium_asset,
     download_visium_study,
     find_visium_files,
+    visium_he_mpp,
+    visium_to_spatialdata,
+    visium_to_spatialdata_zip,
 )
 from .xenium import (
     XeniumConverter,
@@ -29,9 +34,11 @@ from .xenium import (
 )
 
 __all__ = [
+    "VisiumConverter",
     "VisiumDownloader",
     "XeniumConverter",
     "XeniumDownloader",
+    "assign_cells_to_spots",
     "classify_visium_asset",
     "create_circular_spots",
     "create_hexagonal_spots",
@@ -45,6 +52,9 @@ __all__ = [
     "segment_tissue",
     "slide_to_numpy",
     "transform_name",
+    "visium_he_mpp",
+    "visium_to_spatialdata",
+    "visium_to_spatialdata_zip",
     "xenium_to_spatialdata",
     "xenium_to_spatialdata_zip",
 ]
