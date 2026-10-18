@@ -104,6 +104,46 @@ failures, writes atomically so an interrupted download never leaves a
 truncated file, and unzips `*_outs.zip` assets in place (skipping
 `*_xe_outs.zip`).
 
+## Visium Data Conversion
+
+`visium_to_spatialdata()` turns an extracted bundle (`spatial/` unpacked, as `download_visium_study` leaves it) into
+one SpatialData zarr, laid out like a Xenium store: a single `global` coordinate system in H&E pixels (pixel size in `attrs["source_he_mpp"]`).
+
+```python
+from spatialrefinery.io.visium import visium_he_mpp, visium_to_spatialdata, find_visium_files
+
+bundle = "/path/to/raw_files/CytAssist_FFPE_Protein_Expression_Human_Tonsil"
+he_mpp = visium_he_mpp(find_visium_files(bundle)["tissue_positions"])  # segment the H&E at this pixel size
+
+visium_to_spatialdata(bundle, "/path/to/output", nucleus_geojson="cells.geojson")
+```
+
+| element | what it holds |
+| --- | --- |
+| `he_image`, `tissue_contours` | the tissue image (`.ome.tif`, else `.tif`, else `.btf`) and its Otsu contours, both Identity into `global` |
+| `spots` | 55 um circles, one per in-tissue spot |
+| `spots_table` | the ground-truth spot counts over `spots`; antibody capture sits in `obsm["protein_expression"]` |
+| `nucleus_boundaries` | InstanSeg nuclei in H&E pixels (only with `nucleus_geojson`) |
+| `table` | all zeros over the multi-tissue panel, annotating `nucleus_boundaries`; `obs["spot_id"]` is the spot whose disk contains the nucleus, `<NA>` in the gaps between spots |
+
+The pixel size is the 100 um spot pitch divided by the median spacing of the spot lattice in `tissue_positions.csv`
+(~0.274 um/px on the 13-study cohort). It is not read from the tissue image's TIFF tags, which hold the 96-dpi default
+(264.58 um/px), nor derived from `spot_diameter_fullres`: that splits the cohort by chip (0.215 vs 0.251 um/px) instead of
+by image and would make a 4,992-spot lattice narrower than its 64 spots at 100 um allow.
+`scripts/visium_to_zarr.py` is the command-line wrapper.
+
+**Convert the raw tissue image to a pyramidal OME-TIFF first.** 10x ships it single-level, so `segment_tissue` has no
+coarse level to contour and would run on the full-resolution plane (it had not finished after 30 minutes on a 39k px
+slide). `visium_to_spatialdata` refuses such an image and prints the command; `--mpp` is mandatory because the file's own
+tag is the default:
+
+```bash
+python scripts/convert_to_ometiff.py --input_path <bundle>/<study>_tissue_image.tif \
+    --output_dir <bundle> --mpp <he_mpp>
+```
+
+The `<study>_tissue_image.ome.tif` it writes is then found and preferred over the `.tif`/`.btf`.
+
 ## Visium Data Download
 
 ```python

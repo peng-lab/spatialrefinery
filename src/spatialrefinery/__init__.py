@@ -13,6 +13,8 @@ _LAZY_ATTRS = {
     "convert_to_ometiff": "spatialrefinery.core.converter",
     "download_visium_study": "spatialrefinery.io.visium",
     "download_xenium_study": "spatialrefinery.io.xenium",
+    "visium_to_spatialdata": "spatialrefinery.io.visium",
+    "visium_to_spatialdata_zip": "spatialrefinery.io.visium",
     "xenium_to_spatialdata": "spatialrefinery.io.xenium",
     "xenium_to_spatialdata_zip": "spatialrefinery.io.xenium",
 }

@@ -168,6 +168,8 @@ module = [
   "bioio.*",
   "dask_image.*",
   "geopandas.*",
+  # Ships no py.typed marker or stubs.
+  "h5py.*",
   # From the optional `segmentation` extra, so absent in the typecheck env.
   "instanseg.*",
   "pyarrow.*",

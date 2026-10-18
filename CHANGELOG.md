@@ -12,6 +12,25 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
+- `spatialrefinery.io.visium.visium_to_spatialdata` (and `visium_to_spatialdata_zip`, `VisiumConverter`,
+  `scripts/visium_to_zarr.py`): convert an extracted Visium / CytAssist bundle to one SpatialData zarr in a single
+  `global` frame in H&E pixels (every element on an Identity transform; the pixel size is in `source_he_mpp`), laid out
+  like a Xenium store; `spots` (55 um circles, radius in pixels) is annotated by `spots_table`, the ground-truth spot expression, with antibody capture
+  kept in `obsm["protein_expression"]`. Given an InstanSeg `cells.geojson` it also writes `nucleus_boundaries` and
+  an all-zero `table` over the multi-tissue panel whose `obs["spot_id"]` names the spot containing each nucleus
+  (`<NA>` for nuclei in the gaps between spots). The H&E pixel size comes from the spot-lattice pitch in `tissue_positions.csv` (100 um
+  between neighbouring spots), because the tissue images carry a 96-dpi default tag (264.58 um/px) and
+  `spot_diameter_fullres` does not follow the image's pixel size. Only spots with `in_tissue == 1` are kept. A few in-tissue spots past the
+  image edge are kept with a warning, and more than 1% of them outside the image raises. An all-zero spot table raises
+  instead of being written.
+  A single-level tissue image (every raw 10x one) is rejected with the `convert_to_ometiff` command to run, because
+  `segment_tissue` cannot contour a full-resolution plane in reasonable time.
+- `spatialrefinery.io.visium.assign_cells_to_spots` and `visium_he_mpp`.
+- `slurm_scripts/visium_to_zarr.sbatch`: one self-submitting script that segments nuclei (reusing an existing `cells.geojson`)
+  and converts every Visium bundle of a panel to a SpatialData zarr as a Slurm job array, one bundle per task, at most 4
+  at a time. Bundles without a filtered counts matrix are skipped.
+- `tests/sanity_check_spatialdata.py`: a `visium` profile, which also requires `global` to be the only coordinate system.
+- `spatialrefinery.core.utils.sample_attrs` takes `he_mpp` to record a pixel size that is not in the slide's tags.
 - `slurm_scripts/` is now version-controlled (it was the gitignored `slurm/`), starting with
   `xenium_panel_array_to_zarr.sbatch` and `scripts/xenium_panel_array_to_zarr.py`: one self-submitting script that
   converts every Xenium bundle of a panel to a SpatialData zarr as a Slurm job array, one sample per task.
@@ -21,6 +40,12 @@ and this project adheres to [Semantic Versioning][].
 
 ### Changed
 
+- `spatialrefinery.core.utils.split_feature_types` is the former private `io.xenium._split_feature_types`, now taking
+  the antibody feature type and metric so Visium can share it; Xenium behaviour is unchanged.
+- `spatialrefinery.io.visium.find_visium_files` resolves the tissue image as `*_tissue_image.ome.tif`, then `.tif`,
+  then `.btf`, where it used to prefer `.btf`.
+- `spatialrefinery.segmentation.to_spatialdata`: the GeoJSON reading in `geojson_to_spatialdata` is now
+  `read_nucleus_geojson`, and `wsi_image_element` accepts `.btf`. `OpenSlideImageConverter` accepts `.btf` too.
 - `spatialrefinery.io.xenium.xenium_to_spatialdata_zip`: the zip is written uncompressed (`ZIP_STORED`), as the
   segmentation store's zip already was, instead of deflated by `shutil.make_archive`. Zarr chunks and parquet are
   already compressed, so deflating only cost CPU time.

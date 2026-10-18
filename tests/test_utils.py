@@ -29,6 +29,7 @@ from spatialrefinery.core.utils import (
     segment_tissue,
     slide_mpp,
     slide_stem,
+    split_feature_types,
     split_study_filename,
     tar_root_dir,
     transform_name,
@@ -679,3 +680,31 @@ def test_sample_attrs_without_he_keeps_every_key() -> None:
     assert attrs["spatialdata_io_reader"] == "xenium"
     assert attrs["source_mpp"] == DEFAULT_SOURCE_MPP
     assert attrs["source_he_mpp"] is None
+
+
+def test_sample_attrs_he_mpp_overrides_the_slide_tag(tmp_path: Path) -> None:
+    """Visium tissue images carry a bogus default tag, so the caller's `he_mpp` must win over it."""
+    path = _write_tiff(tmp_path / "a.tif", resolution=(1e4 / 264.58, 1e4 / 264.58), resolutionunit="CENTIMETER")
+    assert sample_attrs("visium", path)["source_he_mpp"] == pytest.approx(264.58)
+    assert sample_attrs("visium", path, he_mpp=0.2146)["source_he_mpp"] == 0.2146
+
+
+def test_split_feature_types_takes_the_antibody_label_and_metric_from_the_caller() -> None:
+    """Visium marks antibodies `Antibody Capture` and counts UMIs; neither string may be hard-coded to Xenium's."""
+    import anndata as ad
+    import pandas as pd
+
+    var = pd.DataFrame(
+        {
+            "gene_ids": ["g1", "g2", "p1"],
+            "feature_types": ["Gene Expression", "Gene Expression", "Antibody Capture"],
+        },
+        index=["CD4", "VIM", "CD4"],  # an antibody and a gene sharing a name, as on a real panel
+    )
+    table = ad.AnnData(X=np.arange(6, dtype=np.float32).reshape(2, 3), var=var)
+
+    out = split_feature_types(table, protein_type="Antibody Capture", metric="UMI_COUNTS")
+
+    assert out.var_names.to_list() == ["CD4", "VIM"]
+    assert np.asarray(out.obsm["protein_expression"]).ravel().tolist() == [2.0, 5.0]
+    assert out.uns["protein_expression"] == {"names": ["CD4"], "gene_ids": ["p1"], "metric": "UMI_COUNTS"}
